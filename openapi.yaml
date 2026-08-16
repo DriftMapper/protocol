@@ -1,0 +1,1045 @@
+openapi: 3.1.0
+
+info:
+  title: Driftmapper API
+  version: 1.0.0
+  summary: Build-info registration, resolution, and drift detection.
+  description: |
+    Source of truth for the Driftmapper wire contract. Go types (`oapi-codegen`,
+    types-only) and TypeScript types (`openapi-typescript`) are generated from this
+    file; neither is hand-maintained. See spec §5.1b.
+
+    ## Stability tiers
+
+    This document describes one API with two stability tiers. The tier is declared
+    per-operation via `x-stability`.
+
+    - `x-stability: public` — the CLI-facing contract. Published in the
+      `driftmapper-protocol` Go module, semver'd on this document's version, and
+      covered by the compatibility window below. CI pipelines pin CLI versions and
+      are never force-upgraded, so these operations must remain backward compatible
+      for years.
+    - `x-stability: dashboard` — consumed only by the first-party dashboard SPA,
+      which deploys in lockstep with the server. Types are generated into the SPA but
+      NOT published in the public Go module. Free to change without a major version.
+
+    **In the MVP the public tier is exactly one operation: `registerBuild`.** The CLI
+    is a CI-pipeline tool first — it writes a build and generates an HTML file from
+    the response, and it reads nothing. Every other operation is therefore
+    `dashboard` for now.
+
+    This is deliberately conservative rather than a judgement that these operations
+    will never be CLI-facing; a fully featured CLI is an intended later iteration.
+    Promoting an operation from `dashboard` to `public` later is additive and safe.
+    Demoting one is a breaking change to a contract already pinned in customer CI,
+    which is not. When in doubt, an operation starts `dashboard`.
+
+    ## Compatibility policy
+
+    The server supports the current major version and the two preceding majors (N-2)
+    for `public` operations. Within a major version, only additive changes are
+    permitted: new optional request fields, new response fields, new enum members in
+    response-only positions. CI gates on `oasdiff` breaking-change detection against
+    the previous tag.
+
+    Clients MUST ignore unknown response fields. Servers MUST reject unknown request
+    body fields (see `unknown_field` problem type) rather than silently dropping
+    them — silent drops turn a client bug into missing data discovered months later.
+
+    ## Authentication
+
+    Two principals, deliberately non-interchangeable (spec §5.2a):
+
+    - `workloadOidc` — a machine principal. The raw OIDC ID token issued by the CI
+      provider, presented as a bearer credential. No Driftmapper-issued static token
+      exists anywhere in this system (spec §4). In the MVP this principal reaches
+      exactly one operation: `registerBuild`.
+    - `userSession` — a human principal, via the WorkOS AuthKit session cookie
+      (spec §4A).
+
+    A workload principal can never reach billing, membership, or trust-declaration
+    operations: a compromised CI workflow must not be able to cancel a subscription
+    or add an org member.
+
+    There is deliberately no third principal *yet*. A human-scoped CLI credential
+    (device-code flow or similar) is not needed while the CLI only writes from CI,
+    so it is not specified here — a deferral, not a resolution. It becomes necessary
+    the moment a CLI read command is intended to run from a developer's machine.
+    Note that CLI reads running *in CI* would need no new principal, so if that
+    capability is ever split from laptop-side reads, only the latter forces the
+    decision.
+
+    ## Not described here
+
+    The `build-info.html` meta-tag format is also a public contract with third-party
+    parsers, but it is not API-shaped. It is versioned separately in
+    `FORMAT-build-info.md` in this repository (spec §2.3).
+
+    The resolution page (`/r/{buildInstanceId}`) is server-rendered HTML, not a JSON
+    endpoint (spec §2.7). Its two disclosure tiers correspond exactly to the
+    `BuildPublic` and `Build` schemas below.
+
+servers:
+  - url: https://api.driftmapper.com
+    description: Production
+
+security:
+  - userSession: []
+
+tags:
+  - name: builds
+    description: Build registration and lookup.
+  - name: monitored-urls
+    description: URLs polled for drift detection (spec §2.6).
+  - name: drift-events
+    description: Observed build-ID changes at monitored URLs.
+  - name: trust
+    description: OIDC trust declarations and repo linking (spec §4.5).
+  - name: repos
+    description: Confirmed repos and plan-slot usage.
+  - name: billing
+    description: Subscription and checkout.
+
+paths:
+  /v1/builds:
+    post:
+      operationId: registerBuild
+      summary: Register a build and receive its build-instance ID
+      description: |
+        Called by the CLI during CI. Authenticated with a workload OIDC token only —
+        a human session cannot register builds, because build provenance derives
+        entirely from verified token claims.
+
+        **Token-derived fields are never accepted in the request body.** Repository
+        identity, repository ID, ref, repository visibility, workflow, run ID, and
+        run attempt are read from verified claims (spec §2.2a). Supplying any of them
+        in the body is rejected with `unknown_field` — if the CLI could self-report
+        the repository, any valid token holder could register builds attributed to a
+        repository they do not control.
+
+        **Idempotency (spec §2.5a).** The build-instance ID is content-addressed over
+        the tuple:
+
+            repository_id + commit_sha + ref + workflow + run_id + run_attempt
+
+        A retried step within the same run attempt therefore resolves to the same ID
+        and returns `200` — safe to retry on network failure without creating a
+        duplicate. A manual re-run increments `run_attempt` and produces a new ID,
+        which is correct: it is a genuinely distinct build instance. Note that
+        `commit_sha` alone is insufficient, since the same commit legitimately builds
+        many times.
+
+        Requires the repository's trust declaration to be confirmed, or to be
+        confirmable by this token — see `POST /v1/trust-declarations`. The first
+        valid token matching a provisional declaration confirms it and consumes a
+        plan slot (spec §4.5).
+
+        **This response is the CLI's only template input.** `build_instance_id` and
+        `resolution_url` are both server-provided, and the CLI constructs no URLs and
+        derives no values of its own when writing `build-info.html`. That keeps the
+        generation step a pure function of one response — testable against a fixture
+        with no server, and incapable of drifting from server routing.
+      tags: [builds]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildRegistration'
+      responses:
+        '201':
+          description: Build registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Build'
+        '200':
+          description: |
+            Identical build already registered; existing record returned unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Build'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Token is signature-valid but not authorized to register this build.
+            Includes the claim-mismatch case, which names the specific mismatched
+            field rather than failing generically (spec §4.5).
+          content:
+            application/problem+json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ClaimMismatchProblem'
+                  - $ref: '#/components/schemas/PlanLimitProblem'
+                  - $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    get:
+      operationId: listBuilds
+      summary: List builds
+      tags: [builds]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - name: repository_id
+          in: query
+          schema: { type: string }
+          description: Filter to one repository.
+        - name: ref
+          in: query
+          schema: { type: string }
+        - name: commit_sha
+          in: query
+          schema: { type: string }
+        - name: registered_after
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of builds, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Build' }
+                  page: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/builds/{buildInstanceId}:
+    parameters:
+      - $ref: '#/components/parameters/BuildInstanceId'
+    get:
+      operationId: getBuild
+      summary: Fetch one build by its build-instance ID
+      description: |
+        This is the JSON equivalent of the authenticated tier of the resolution page.
+        There is no unauthenticated variant of this endpoint: the public tier exists
+        only as server-rendered HTML and OG tags (spec §2.7).
+      tags: [builds]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Build detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Build' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/monitored-urls:
+    post:
+      operationId: createMonitoredUrl
+      summary: Register a URL for drift polling
+      description: |
+        **Precondition (spec §2.6):** the repository's trust declaration must be
+        confirmed and it must have at least one registered build. Polling before a
+        build exists can only produce a spurious never-yet-succeeded notice, since
+        there is no prior build-instance ID to diff against. Violations return
+        `precondition_not_met`.
+
+        The registered URL is fetched by an isolated worker with its own egress
+        policy and restricted database role. Registering a URL that resolves to a
+        private, link-local, or loopback address is rejected — evaluated after DNS
+        resolution, and re-evaluated at every redirect hop.
+      tags: [monitored-urls]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repository_id, url]
+              properties:
+                repository_id:
+                  type: string
+                  description: Must reference a confirmed repository.
+                url:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+                  description: |
+                    Absolute URL of the deployed `build-info.html`. HTTPS only.
+                label:
+                  type: string
+                  maxLength: 128
+                  description: Human label, e.g. "production" or "staging".
+      responses:
+        '201':
+          description: URL registered; polling begins on the next scheduled cycle.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MonitoredUrl' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: This URL is already registered for this repository.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    get:
+      operationId: listMonitoredUrls
+      summary: List monitored URLs
+      tags: [monitored-urls]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - name: repository_id
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of monitored URLs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/MonitoredUrl' }
+                  page: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/monitored-urls/{monitoredUrlId}:
+    parameters:
+      - name: monitoredUrlId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getMonitoredUrl
+      summary: Fetch one monitored URL, including its last-seen build
+      description: |
+        `last_seen_build_instance_id` is the CLI's "what is currently live at this
+        URL" answer.
+      tags: [monitored-urls]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Monitored URL detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MonitoredUrl' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteMonitoredUrl
+      summary: Stop polling a URL
+      description: |
+        Polling stops immediately. Historical drift events are retained — they are
+        observations that happened, and deleting them would falsify history.
+      tags: [monitored-urls]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/drift-events:
+    get:
+      operationId: listDriftEvents
+      summary: List observed drift events
+      description: |
+        Only change events and integration-health transitions are stored — never raw
+        poll logs (spec §2.6). An empty result means nothing changed, not that
+        nothing was checked.
+
+        This is explicitly not an uptime feed. A URL being unreachable surfaces as an
+        `integration_health` event meaning "we cannot do our job at this URL", after
+        a sustained-failure threshold; it is not an availability signal and must not
+        be presented as one.
+      tags: [drift-events]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - name: repository_id
+          in: query
+          schema: { type: string }
+        - name: monitored_url_id
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/DriftEventType' }
+        - name: observed_after
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of drift events, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/DriftEvent' }
+                  page: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/trust-declarations:
+    post:
+      operationId: createTrustDeclaration
+      summary: Declare an OIDC trust relationship for a repository
+      description: |
+        Human-only. A workload token can never create a trust declaration — that
+        would let a compromised workflow grant itself access to new repositories.
+
+        The declaration is **provisional**: it grants nothing, consumes no plan slot,
+        and can be created by anyone. It is confirmed by the first signature-valid
+        token whose claims match it, which is what proves control of the repository
+        (spec §4.5). Because a squatter can never produce such a token, multiple
+        orgs may safely hold provisional declarations for the same repository; the
+        first confirmed wins and the others are invalidated.
+
+        Unconfirmed declarations expire.
+
+        The required `claims` fields are determined by the selected provider and are
+        driven by the same claim-mapping registry the server uses for verification
+        (spec §4.3) — adding a provider adds its form fields as a consequence.
+      tags: [trust]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, claims]
+              properties:
+                provider:
+                  $ref: '#/components/schemas/Provider'
+                claims:
+                  type: object
+                  description: |
+                    Provider-specific claim values to match against. For
+                    `github_actions`: `repository` (owner/name) and `workflow`
+                    (filename including extension) are required; `ref` and
+                    `environment` are optional and narrow the match further.
+
+                    Values are matched exactly and are case-sensitive.
+                  additionalProperties:
+                    type: string
+                    maxLength: 512
+      responses:
+        '201':
+          description: Provisional declaration created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustDeclaration' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listTrustDeclarations
+      summary: List this organization's trust declarations
+      tags: [trust]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TrustDeclarationStatus' }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of trust declarations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrustDeclaration' }
+                  page: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/trust-declarations/{trustDeclarationId}:
+    parameters:
+      - name: trustDeclarationId
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      operationId: deleteTrustDeclaration
+      summary: Revoke a trust declaration
+      description: |
+        Revoking a confirmed declaration unlinks the repository and frees its plan
+        slot. Subsequent builds from that repository are rejected. Existing build
+        records and drift history are retained.
+      tags: [trust]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/repos:
+    get:
+      operationId: listRepos
+      summary: List confirmed repositories and plan-slot usage
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of confirmed repositories.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Repository' }
+                  page: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/organization:
+    get:
+      operationId: getOrganization
+      summary: Current organization, plan, and slot usage
+      tags: [billing]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Organization detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Organization' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/billing/checkout-session:
+    post:
+      operationId: createCheckoutSession
+      summary: Create a Stripe Checkout session
+      description: |
+        Returns a URL to redirect the browser to. Checkout itself is browser-native
+        and is not reachable from the CLI (spec §5.2a).
+      tags: [billing]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan, return_url]
+              properties:
+                plan:
+                  $ref: '#/components/schemas/Plan'
+                return_url:
+                  type: string
+                  format: uri
+      responses:
+        '201':
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkout_url]
+                properties:
+                  checkout_url: { type: string, format: uri }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/billing/portal-session:
+    post:
+      operationId: createPortalSession
+      summary: Create a Stripe billing-portal session
+      tags: [billing]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [return_url]
+              properties:
+                return_url: { type: string, format: uri }
+      responses:
+        '201':
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [portal_url]
+                properties:
+                  portal_url: { type: string, format: uri }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+
+  securitySchemes:
+    workloadOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The raw OIDC ID token minted by the CI provider, presented directly. The
+        server verifies the signature against the issuer's JWKS and maps claims via
+        the issuer registry (spec §4.3). Tokens are short-lived and provider-issued;
+        Driftmapper never issues, stores, or accepts a static token.
+    userSession:
+      type: apiKey
+      in: cookie
+      name: dm_session
+      description: WorkOS AuthKit session cookie (spec §4A).
+
+  parameters:
+    BuildInstanceId:
+      name: buildInstanceId
+      in: path
+      required: true
+      schema: { type: string }
+      description: Opaque, server-issued build-instance ID.
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque cursor from a previous page's `next_cursor`.
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing, expired, or invalid credentials.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: |
+        No such resource, or the caller is not entitled to know it exists. These are
+        deliberately indistinguishable — a distinguishable 403 would let an
+        unauthorized caller enumerate valid build-instance IDs.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: Well-formed request that violates a documented constraint.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    Provider:
+      type: string
+      description: |
+        CI provider identity. v1 supports GitHub Actions only; further providers are
+        additive registry entries and appear here as new enum members (spec §4.4).
+        Clients MUST tolerate unknown values in responses.
+      enum: [github_actions]
+
+    Plan:
+      type: string
+      enum: [free, paid, enterprise]
+
+    Visibility:
+      type: string
+      description: |
+        Derived from the `repository_visibility` OIDC claim, never client-supplied.
+        This is what gates the Free tier's public-repo allowance (spec §6A), so it is
+        enforced from the signed token with no VCS API call.
+      enum: [public, private, internal]
+
+    BuildMetadata:
+      type: object
+      description: |
+        Free-form organization-defined fields (owning team, ticket reference,
+        environment label). Flat string-to-string by design (spec §2.2a): nesting
+        would destabilize the wire type under the compatibility window, hurt
+        queryability, and invite this field to become a blob store.
+
+        **Always authenticated-tier only.** Customers place arbitrary content here,
+        and the two-tier disclosure model depends on knowing exactly what is public,
+        so these values never appear in the unauthenticated resolution page or its OG
+        tags. There is no per-key public opt-in in v1.
+
+        Keys beginning `driftmapper.` are reserved and rejected, leaving room to
+        promote custom fields to first-class ones later without collision. The
+        reserved-prefix rule is enforced in server code rather than expressed in the
+        `pattern` below: the natural expression is a negative lookahead, which Go's
+        RE2 engine cannot compile, so encoding it here would produce a schema the
+        server cannot mechanically enforce.
+      maxProperties: 50
+      propertyNames:
+        maxLength: 64
+        pattern: '^[A-Za-z0-9_.-]+$'
+      additionalProperties:
+        type: string
+        maxLength: 1024
+
+    BuildRegistration:
+      type: object
+      description: |
+        Only fields the OIDC token cannot attest to. Everything derivable from
+        verified claims is server-derived and rejected here (spec §2.2a).
+      required: [commit_sha, built_at]
+      additionalProperties: false
+      properties:
+        commit_sha:
+          type: string
+          minLength: 7
+          maxLength: 64
+        commit_author:
+          type: string
+          maxLength: 256
+          description: Normalized by the CLI from provider-specific build context.
+        commit_committer:
+          type: string
+          maxLength: 256
+        built_at:
+          type: string
+          format: date-time
+        trigger_event:
+          type: string
+          maxLength: 64
+          description: Normalized trigger, e.g. `push`, `pull_request`, `manual`.
+        metadata:
+          $ref: '#/components/schemas/BuildMetadata'
+
+    BuildPublic:
+      type: object
+      description: |
+        The unauthenticated disclosure tier (spec §2.7). This is exactly what link
+        unfurlers and logged-out visitors see on the resolution page: enough to make
+        a preview useful and confirm the link is a real Driftmapper build link,
+        and nothing more.
+
+        Deliberately excludes committer, author, internal repository path, and all
+        custom metadata. This tier matches the disclosure boundary teams already have
+        with a plain public build-info file, so nothing that is public today becomes
+        private and nothing private today becomes public.
+      required: [build_instance_id, repository_name, built_at]
+      properties:
+        build_instance_id: { type: string }
+        repository_name:
+          type: string
+          description: Short repository name only — never the full internal path.
+        built_at: { type: string, format: date-time }
+
+    Build:
+      type: object
+      description: The authenticated disclosure tier — full metadata (spec §2.7).
+      required:
+        - build_instance_id
+        - repository_id
+        - repository_name
+        - visibility
+        - commit_sha
+        - ref
+        - workflow
+        - built_at
+        - registered_at
+      properties:
+        build_instance_id:
+          type: string
+          description: |
+            Opaque and server-issued. Content-addressed over the tuple documented on
+            `registerBuild`. Clients MUST treat this as opaque and MUST NOT parse it —
+            the derivation is an implementation detail that may change.
+        repository_id:
+          type: string
+          description: |
+            Provider's stable repository identifier. Internal identity is keyed on
+            this rather than `owner/name`, which changes on rename.
+        repository_name: { type: string }
+        repository_path:
+          type: string
+          description: Full `owner/name` path. Authenticated tier only.
+        visibility: { $ref: '#/components/schemas/Visibility' }
+        provider: { $ref: '#/components/schemas/Provider' }
+        commit_sha: { type: string }
+        commit_author: { type: string }
+        commit_committer: { type: string }
+        ref: { type: string }
+        workflow: { type: string }
+        run_id: { type: string }
+        run_attempt: { type: integer }
+        trigger_event: { type: string }
+        built_at: { type: string, format: date-time }
+        registered_at: { type: string, format: date-time }
+        resolution_url:
+          type: string
+          format: uri
+          description: |
+            Canonical resolution page for this build — the URL written into
+            `build-info.html`. Server-provided so the CLI never constructs it and
+            cannot drift from server routing.
+        metadata: { $ref: '#/components/schemas/BuildMetadata' }
+
+    MonitoredUrl:
+      type: object
+      required: [monitored_url_id, repository_id, url, health, created_at]
+      properties:
+        monitored_url_id: { type: string }
+        repository_id: { type: string }
+        url: { type: string, format: uri }
+        label: { type: string }
+        health: { $ref: '#/components/schemas/IntegrationHealth' }
+        last_seen_build_instance_id:
+          type: string
+          description: |
+            Most recent build-instance ID parsed at this URL. Null until the first
+            successful poll.
+        last_change_observed_at:
+          type: string
+          format: date-time
+          description: |
+            When the build ID at this URL last changed — not when it was last
+            polled. Poll timestamps are not stored (spec §2.6).
+        created_at: { type: string, format: date-time }
+
+    IntegrationHealth:
+      type: string
+      description: |
+        Whether Driftmapper can do its job at this URL — not whether the site is up.
+
+        - `pending` — registered, not yet successfully polled.
+        - `ok` — last poll parsed a build ID.
+        - `never_succeeded` — has never once succeeded. Surfaced immediately, since
+          this almost always means a setup error, not an outage.
+        - `failing` — previously succeeded, now failing past the sustained-failure
+          threshold.
+        - `unsupported_schema` — the file was fetched and parsed, but its
+          `driftmapper:schema-version` is one this server does not understand. Held
+          distinct from `failing` on purpose: it is neither drift nor a fetch error,
+          and the remedy is different (upgrade the server or the CLI, not fix the
+          deployment).
+      enum: [pending, ok, never_succeeded, failing, unsupported_schema]
+
+    DriftEventType:
+      type: string
+      enum: [build_id_changed, integration_health_changed]
+
+    DriftEvent:
+      type: object
+      required: [drift_event_id, type, monitored_url_id, repository_id, observed_at]
+      properties:
+        drift_event_id: { type: string }
+        type: { $ref: '#/components/schemas/DriftEventType' }
+        monitored_url_id: { type: string }
+        repository_id: { type: string }
+        previous_build_instance_id:
+          type: string
+          description: Null for the first observation at a URL.
+        current_build_instance_id: { type: string }
+        previous_health: { $ref: '#/components/schemas/IntegrationHealth' }
+        current_health: { $ref: '#/components/schemas/IntegrationHealth' }
+        observed_at: { type: string, format: date-time }
+
+    TrustDeclarationStatus:
+      type: string
+      description: |
+        - `provisional` — created, unconfirmed, grants nothing, consumes no slot.
+        - `confirmed` — a matching valid token was received; repository is linked and
+          a plan slot is consumed.
+        - `invalidated` — another organization confirmed this repository first.
+        - `expired` — never confirmed within the expiry window.
+      enum: [provisional, confirmed, invalidated, expired]
+
+    TrustDeclaration:
+      type: object
+      required: [trust_declaration_id, provider, claims, status, created_at]
+      properties:
+        trust_declaration_id: { type: string }
+        provider: { $ref: '#/components/schemas/Provider' }
+        claims:
+          type: object
+          additionalProperties: { type: string }
+        status: { $ref: '#/components/schemas/TrustDeclarationStatus' }
+        repository_id:
+          type: string
+          description: Populated on confirmation.
+        confirmed_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          description: Applies while `provisional`.
+        created_at: { type: string, format: date-time }
+
+    Repository:
+      type: object
+      required: [repository_id, provider, path, visibility, linked_at]
+      properties:
+        repository_id: { type: string }
+        provider: { $ref: '#/components/schemas/Provider' }
+        path: { type: string, description: '`owner/name` at time of last build.' }
+        visibility: { $ref: '#/components/schemas/Visibility' }
+        consumes_plan_slot:
+          type: boolean
+          description: |
+            False for public repositories on the Free tier, which are unmetered
+            (spec §6A).
+        latest_build_instance_id: { type: string }
+        linked_at: { type: string, format: date-time }
+
+    Organization:
+      type: object
+      required: [organization_id, name, plan, slots_used]
+      properties:
+        organization_id: { type: string }
+        name: { type: string }
+        plan: { $ref: '#/components/schemas/Plan' }
+        slots_used:
+          type: integer
+          description: Private repositories consuming a plan slot.
+        slots_included:
+          type: integer
+          description: Null on Enterprise, which is not gated on repository count.
+        sso_enforced: { type: boolean }
+
+    PageInfo:
+      type: object
+      required: [has_more]
+      properties:
+        has_more: { type: boolean }
+        next_cursor:
+          type: string
+          description: Present only when `has_more` is true.
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details. Served as `application/problem+json`.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: |
+            Stable, resolvable problem-type URI. Machine-readable identity of the
+            error — clients branch on this, never on `title` or `detail`, both of
+            which may be reworded without a version bump.
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+
+    ClaimMismatchProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          description: |
+            A signature-valid token whose claims did not match any trust declaration.
+
+            The mismatched field is named explicitly rather than returning a generic
+            authentication failure. This is the single most likely point of
+            first-run abandonment — a case-sensitive workflow filename mismatch is a
+            well-documented source of setup friction in comparable systems (spec
+            §4.5) — and a specific error is cheap to produce and turns a dead end
+            into a one-line fix.
+          required: [mismatched_claim, expected, actual]
+          properties:
+            mismatched_claim:
+              type: string
+              description: e.g. `workflow`, `repository`, `ref`, `environment`.
+            expected:
+              type: string
+              description: Value from the trust declaration.
+            actual:
+              type: string
+              description: |
+                Value from the verified token. Safe to echo: the caller demonstrably
+                already holds this token.
+
+    PlanLimitProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          description: |
+            Confirming this repository would exceed the plan's slot allowance.
+            Returned at confirmation time rather than declaration time, so an
+            unconfirmed declaration never consumes a slot (spec §4.5).
+          required: [slots_used, slots_included]
+          properties:
+            slots_used: { type: integer }
+            slots_included: { type: integer }
+            upgrade_url: { type: string, format: uri }

@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: make build
+      - run: make vet
+
+      # Regenerates types.gen.go and fails on any diff, so a spec change
+      # committed without its matching generated output is caught here
+      # instead of surfacing as a mismatch for whoever imports this module
+      # next.
+      - run: make verify-generate

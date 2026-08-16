@@ -1,0 +1,44 @@
+name: oasdiff
+
+# Gates on oasdiff breaking-change detection against the previous release
+# tag (spec §5.1b) — not against main's HEAD, since the compatibility
+# window is a promise about published versions. A breaking change under
+# review that hasn't shipped yet isn't a compatibility violation.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - openapi.yaml
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  breaking-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve previous release tag
+        id: prev-tag
+        run: |
+          TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$TAG" ]; then
+            echo "No previous release tag found; nothing to diff against yet."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: oasdiff/oasdiff-action/breaking@v0
+        if: steps.prev-tag.outputs.skip == 'false'
+        with:
+          base: '${{ steps.prev-tag.outputs.tag }}:openapi.yaml'
+          revision: 'HEAD:openapi.yaml'
+          fail-on: WARN
+          github-token: ${{ github.token }}
