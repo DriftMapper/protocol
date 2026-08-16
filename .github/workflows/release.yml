@@ -1,0 +1,35 @@
+name: release
+
+# Tagging is the release act (see README "Releasing"): this just turns a
+# pushed vX.Y.Z tag into a GitHub Release page, with notes generated from
+# the merged PRs since the previous tag so consumers get a diffing
+# experience and the latest version surfaces where GitHub expects it.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Re-run the same gate as ci.yml against the tagged commit, so a
+      # release page can't be published for a build that doesn't compile
+      # or has drifted generated output.
+      - run: make build
+      - run: make vet
+      - run: make verify-generate
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes

@@ -57,6 +57,10 @@ without its matching generated output.
 - **`oasdiff.yml`** — runs `oasdiff` breaking-change detection between
   `openapi.yaml` on the PR branch and the previous release tag. A detected
   breaking change fails the check; ship it as a major version bump instead.
+- **`release.yml`** — on push of a `vX.Y.Z` tag, re-runs the build/vet/
+  verify-generate gate against the tagged commit, then publishes a GitHub
+  Release with notes auto-generated from the PRs merged since the previous
+  tag.
 
 ## Releasing
 
@@ -70,3 +74,7 @@ git push origin vX.Y.Z
 Bump `X` for any breaking change to a `public`-tier operation (`oasdiff`
 enforces this in CI). `dashboard`-tier operations may change freely within
 the current major.
+
+Pushing the tag is the release: `release.yml` picks it up and publishes
+the GitHub Release page automatically, so there's nothing further to run
+by hand.
