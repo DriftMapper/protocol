@@ -3,4 +3,4 @@
 // versioning and compatibility policy.
 package protocol
 
-//go:generate ./hack/generate.sh
+//go:generate ./scripts/generate.sh

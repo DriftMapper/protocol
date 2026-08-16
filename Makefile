@@ -1,7 +1,7 @@
 .PHONY: generate verify-generate build vet test
 
 generate:
-	./hack/generate.sh
+	./scripts/generate.sh
 
 # Fails if openapi.yaml and the committed types.gen.go have drifted apart.
 # Run in CI so a spec change without a matching regenerated commit is caught
