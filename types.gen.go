@@ -4,7 +4,6 @@
 package protocol
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -76,13 +75,13 @@ func (e Plan) Valid() bool {
 
 // Defines values for Provider.
 const (
-	GithubActions Provider = "github_actions"
+	Github Provider = "github"
 )
 
 // Valid indicates whether the value is a known member of the Provider enum.
 func (e Provider) Valid() bool {
 	switch e {
-	case GithubActions:
+	case Github:
 		return true
 	default:
 		return false
@@ -166,6 +165,10 @@ type Build struct {
 	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 	// additive registry entries and appear here as new enum members (spec §4.4).
 	// Clients MUST tolerate unknown values in responses.
+	//
+	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+	// server-side), not a literal "GitHub Actions" spelling — matches what every
+	// `provider`/`claims.Issuer` value on the wire actually contains.
 	Provider     *Provider `json:"provider,omitempty"`
 	Ref          string    `json:"ref"`
 	RegisteredAt time.Time `json:"registered_at"`
@@ -182,15 +185,28 @@ type Build struct {
 	// `build-info.html`. Server-provided so the CLI never constructs it and
 	// cannot drift from server routing.
 	ResolutionUrl *string `json:"resolution_url,omitempty"`
-	RunAttempt    *int    `json:"run_attempt,omitempty"`
-	RunId         *string `json:"run_id,omitempty"`
-	TriggerEvent  *string `json:"trigger_event,omitempty"`
+
+	// RunAttempt A passthrough OIDC claim value (GitHub's `run_attempt` claim is itself a
+	// string), never parsed or compared numerically server-side — only used as
+	// one input to the content-address tuple (spec §2.5a). Typed as a string
+	// rather than `integer` for that reason.
+	RunAttempt   *string `json:"run_attempt,omitempty"`
+	RunId        *string `json:"run_id,omitempty"`
+	TriggerEvent *string `json:"trigger_event,omitempty"`
 
 	// Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
 	// This is what gates the Free tier's public-repo allowance (spec §6A), so it is
 	// enforced from the signed token with no VCS API call.
 	Visibility Visibility `json:"visibility"`
 	Workflow   string     `json:"workflow"`
+}
+
+// BuildListResponse defines model for BuildListResponse.
+type BuildListResponse struct {
+	Data struct {
+		Items []Build  `json:"items"`
+		Page  PageInfo `json:"page"`
+	} `json:"data"`
 }
 
 // BuildMetadata Free-form organization-defined fields (owning team, ticket reference,
@@ -260,26 +276,58 @@ type BuildRegistration struct {
 	TriggerEvent *string `json:"trigger_event,omitempty"`
 }
 
-// ClaimMismatchProblem defines model for ClaimMismatchProblem.
-type ClaimMismatchProblem struct {
+// BuildResponse defines model for BuildResponse.
+type BuildResponse struct {
+	// Data The authenticated disclosure tier — full metadata (spec §2.7).
+	Data Build `json:"data"`
+}
+
+// ClaimMismatchDetails `error.details` shape when `error.code` is `claim_mismatch`: a signature-
+// valid token whose claims did not match any trust declaration.
+//
+// The mismatched field is named explicitly rather than returning a generic
+// authentication failure. This is the single most likely point of first-run
+// abandonment — a case-sensitive workflow filename mismatch is a well-
+// documented source of setup friction in comparable systems (spec §4.5) —
+// and a specific error is cheap to produce and turns a dead end into a
+// one-line fix.
+type ClaimMismatchDetails struct {
 	// Actual Value from the verified token. Safe to echo: the caller demonstrably
 	// already holds this token.
-	Actual string  `json:"actual"`
-	Detail *string `json:"detail,omitempty"`
+	Actual string `json:"actual"`
 
 	// Expected Value from the trust declaration.
-	Expected string  `json:"expected"`
-	Instance *string `json:"instance,omitempty"`
+	Expected string `json:"expected"`
 
 	// MismatchedClaim e.g. `workflow`, `repository`, `ref`, `environment`.
 	MismatchedClaim string `json:"mismatched_claim"`
-	Status          int    `json:"status"`
-	Title           string `json:"title"`
+}
 
-	// Type Stable, resolvable problem-type URI. Machine-readable identity of the
-	// error — clients branch on this, never on `title` or `detail`, both of
-	// which may be reworded without a version bump.
-	Type string `json:"type"`
+// CreateTrustDeclarationRequest defines model for CreateTrustDeclarationRequest.
+type CreateTrustDeclarationRequest struct {
+	// Environment Optional. Omitted/empty matches any environment.
+	Environment *string `json:"environment,omitempty"`
+
+	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
+	// additive registry entries and appear here as new enum members (spec §4.4).
+	// Clients MUST tolerate unknown values in responses.
+	//
+	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+	// server-side), not a literal "GitHub Actions" spelling — matches what every
+	// `provider`/`claims.Issuer` value on the wire actually contains.
+	Provider Provider `json:"provider"`
+
+	// Ref Optional. Omitted/empty matches any ref.
+	Ref *string `json:"ref,omitempty"`
+
+	// Repository `owner/name`. Unverified until confirmation.
+	Repository string `json:"repository"`
+
+	// Workflow Filename including extension (e.g. `ci.yml`), matched against the bare
+	// filename extracted from a `workflow_ref`-shaped claim — never the raw
+	// claim value. Required: an empty/omitted `workflow` would otherwise match
+	// any workflow in the repository, which is not this operation's default.
+	Workflow string `json:"workflow"`
 }
 
 // DriftEvent defines model for DriftEvent.
@@ -325,8 +373,44 @@ type DriftEvent struct {
 	Type           DriftEventType     `json:"type"`
 }
 
+// DriftEventListResponse defines model for DriftEventListResponse.
+type DriftEventListResponse struct {
+	Data struct {
+		Items []DriftEvent `json:"items"`
+		Page  PageInfo     `json:"page"`
+	} `json:"data"`
+}
+
 // DriftEventType defines model for DriftEventType.
 type DriftEventType string
+
+// Error The `error` half of the response envelope (see "Response envelope" above).
+// Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
+// actually emits (`internal/api/respond.go`'s `errorBody`).
+type Error struct {
+	// Code Stable, machine-readable identity of the error. Clients branch on this,
+	// never on `message`, which may be reworded without a version bump.
+	// Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
+	// `unknown_field`, `claim_mismatch`, `no_trust_declaration`.
+	Code string `json:"code"`
+
+	// Details Structured, error-specific fields a client can act on programmatically.
+	// Present only for errors that have them (currently `claim_mismatch` —
+	// see `ClaimMismatchDetails` — and, once slot enforcement lands,
+	// `plan_limit` — see `PlanLimitDetails`); absent otherwise.
+	Details *map[string]interface{} `json:"details,omitempty"`
+
+	// Message Human-readable, safe to display directly.
+	Message string `json:"message"`
+}
+
+// ErrorEnvelope defines model for ErrorEnvelope.
+type ErrorEnvelope struct {
+	// Error The `error` half of the response envelope (see "Response envelope" above).
+	// Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
+	// actually emits (`internal/api/respond.go`'s `errorBody`).
+	Error Error `json:"error"`
+}
 
 // IntegrationHealth Whether Driftmapper can do its job at this URL — not whether the site is up.
 //
@@ -375,6 +459,19 @@ type MonitoredUrl struct {
 	Url                     string  `json:"url"`
 }
 
+// MonitoredUrlListResponse defines model for MonitoredUrlListResponse.
+type MonitoredUrlListResponse struct {
+	Data struct {
+		Items []MonitoredUrl `json:"items"`
+		Page  PageInfo       `json:"page"`
+	} `json:"data"`
+}
+
+// MonitoredUrlResponse defines model for MonitoredUrlResponse.
+type MonitoredUrlResponse struct {
+	Data MonitoredUrl `json:"data"`
+}
+
 // Organization defines model for Organization.
 type Organization struct {
 	Name           string `json:"name"`
@@ -389,6 +486,11 @@ type Organization struct {
 	SsoEnforced *bool `json:"sso_enforced,omitempty"`
 }
 
+// OrganizationResponse defines model for OrganizationResponse.
+type OrganizationResponse struct {
+	Data Organization `json:"data"`
+}
+
 // PageInfo defines model for PageInfo.
 type PageInfo struct {
 	HasMore bool `json:"has_more"`
@@ -400,38 +502,24 @@ type PageInfo struct {
 // Plan defines model for Plan.
 type Plan string
 
-// PlanLimitProblem defines model for PlanLimitProblem.
-type PlanLimitProblem struct {
-	Detail        *string `json:"detail,omitempty"`
-	Instance      *string `json:"instance,omitempty"`
+// PlanLimitDetails `error.details` shape when `error.code` is `plan_limit`: confirming this
+// repository would exceed the plan's slot allowance. Returned at confirmation
+// time rather than declaration time, so an unconfirmed declaration never
+// consumes a slot (spec §4.5). Not yet emitted by the server — plan-slot
+// enforcement lands in DRFT-22 — documented here as the shape it will use.
+type PlanLimitDetails struct {
 	SlotsIncluded int     `json:"slots_included"`
 	SlotsUsed     int     `json:"slots_used"`
-	Status        int     `json:"status"`
-	Title         string  `json:"title"`
-
-	// Type Stable, resolvable problem-type URI. Machine-readable identity of the
-	// error — clients branch on this, never on `title` or `detail`, both of
-	// which may be reworded without a version bump.
-	Type       string  `json:"type"`
-	UpgradeUrl *string `json:"upgrade_url,omitempty"`
-}
-
-// Problem RFC 9457 problem details. Served as `application/problem+json`.
-type Problem struct {
-	Detail   *string `json:"detail,omitempty"`
-	Instance *string `json:"instance,omitempty"`
-	Status   int     `json:"status"`
-	Title    string  `json:"title"`
-
-	// Type Stable, resolvable problem-type URI. Machine-readable identity of the
-	// error — clients branch on this, never on `title` or `detail`, both of
-	// which may be reworded without a version bump.
-	Type string `json:"type"`
+	UpgradeUrl    *string `json:"upgrade_url,omitempty"`
 }
 
 // Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 // additive registry entries and appear here as new enum members (spec §4.4).
 // Clients MUST tolerate unknown values in responses.
+//
+// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+// server-side), not a literal "GitHub Actions" spelling — matches what every
+// `provider`/`claims.Issuer` value on the wire actually contains.
 type Provider string
 
 // Repository defines model for Repository.
@@ -448,6 +536,10 @@ type Repository struct {
 	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 	// additive registry entries and appear here as new enum members (spec §4.4).
 	// Clients MUST tolerate unknown values in responses.
+	//
+	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+	// server-side), not a literal "GitHub Actions" spelling — matches what every
+	// `provider`/`claims.Issuer` value on the wire actually contains.
 	Provider     Provider `json:"provider"`
 	RepositoryId string   `json:"repository_id"`
 
@@ -457,30 +549,66 @@ type Repository struct {
 	Visibility Visibility `json:"visibility"`
 }
 
+// RepositoryListResponse defines model for RepositoryListResponse.
+type RepositoryListResponse struct {
+	Data struct {
+		Items []Repository `json:"items"`
+		Page  PageInfo     `json:"page"`
+	} `json:"data"`
+}
+
 // TrustDeclaration defines model for TrustDeclaration.
 type TrustDeclaration struct {
-	Claims      map[string]string `json:"claims"`
-	ConfirmedAt *time.Time        `json:"confirmed_at,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
+	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+
+	// Environment Absent means "any environment accepted."
+	Environment *string `json:"environment,omitempty"`
 
 	// ExpiresAt Applies while `provisional`.
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Id        int64     `json:"id"`
 
 	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 	// additive registry entries and appear here as new enum members (spec §4.4).
 	// Clients MUST tolerate unknown values in responses.
+	//
+	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+	// server-side), not a literal "GitHub Actions" spelling — matches what every
+	// `provider`/`claims.Issuer` value on the wire actually contains.
 	Provider Provider `json:"provider"`
 
-	// RepositoryId Populated on confirmation.
-	RepositoryId *string `json:"repository_id,omitempty"`
+	// Ref Absent means "any ref accepted."
+	Ref *string `json:"ref,omitempty"`
+
+	// Repository `owner/name`, as declared. Unverified until confirmation.
+	Repository string `json:"repository"`
+
+	// RepositoryId Populated on confirmation. This is Driftmapper's internal repository id
+	// (`repositories.id`), NOT the provider's stable repository id returned as
+	// `Repository.repository_id` / `Build.repository_id` elsewhere in this API
+	// — those two identifier spaces are not directly comparable today. Worth
+	// resolving before a client tries to correlate a confirmed declaration with
+	// its `/v1/repos` entry.
+	RepositoryId *int64 `json:"repository_id,omitempty"`
 
 	// Status - `provisional` — created, unconfirmed, grants nothing, consumes no slot.
 	// - `confirmed` — a matching valid token was received; repository is linked and
 	//   a plan slot is consumed.
 	// - `invalidated` — another organization confirmed this repository first.
 	// - `expired` — never confirmed within the expiry window.
-	Status             TrustDeclarationStatus `json:"status"`
-	TrustDeclarationId string                 `json:"trust_declaration_id"`
+	Status   TrustDeclarationStatus `json:"status"`
+	Workflow string                 `json:"workflow"`
+}
+
+// TrustDeclarationListResponse defines model for TrustDeclarationListResponse.
+type TrustDeclarationListResponse struct {
+	Data []TrustDeclaration `json:"data"`
+}
+
+// TrustDeclarationResponse defines model for TrustDeclarationResponse.
+type TrustDeclarationResponse struct {
+	Data TrustDeclaration `json:"data"`
 }
 
 // TrustDeclarationStatus - `provisional` — created, unconfirmed, grants nothing, consumes no slot.
@@ -504,17 +632,23 @@ type Cursor = string
 // Limit defines model for Limit.
 type Limit = int
 
-// BadRequest RFC 9457 problem details. Served as `application/problem+json`.
-type BadRequest = Problem
+// OrgSlug defines model for OrgSlug.
+type OrgSlug = string
 
-// NotFound RFC 9457 problem details. Served as `application/problem+json`.
-type NotFound = Problem
+// BadRequest defines model for BadRequest.
+type BadRequest = ErrorEnvelope
 
-// Unauthorized RFC 9457 problem details. Served as `application/problem+json`.
-type Unauthorized = Problem
+// Forbidden defines model for Forbidden.
+type Forbidden = ErrorEnvelope
 
-// UnprocessableEntity RFC 9457 problem details. Served as `application/problem+json`.
-type UnprocessableEntity = Problem
+// NotFound defines model for NotFound.
+type NotFound = ErrorEnvelope
+
+// Unauthorized defines model for Unauthorized.
+type Unauthorized = ErrorEnvelope
+
+// UnprocessableEntity defines model for UnprocessableEntity.
+type UnprocessableEntity = ErrorEnvelope
 
 // CreateCheckoutSessionJSONBody defines parameters for CreateCheckoutSession.
 type CreateCheckoutSessionJSONBody struct {
@@ -538,11 +672,6 @@ type ListBuildsParams struct {
 	// Cursor Opaque cursor from a previous page's `next_cursor`.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-}
-
-// RegisterBuild403ApplicationProblemPlusJSONResponseBody defines parameters for RegisterBuild.
-type RegisterBuild403ApplicationProblemPlusJSONResponseBody struct {
-	union json.RawMessage
 }
 
 // ListDriftEventsParams defines parameters for ListDriftEvents.
@@ -585,31 +714,6 @@ type ListReposParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
-// ListTrustDeclarationsParams defines parameters for ListTrustDeclarations.
-type ListTrustDeclarationsParams struct {
-	Status *TrustDeclarationStatus `form:"status,omitempty" json:"status,omitempty"`
-
-	// Cursor Opaque cursor from a previous page's `next_cursor`.
-	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-}
-
-// CreateTrustDeclarationJSONBody defines parameters for CreateTrustDeclaration.
-type CreateTrustDeclarationJSONBody struct {
-	// Claims Provider-specific claim values to match against. For
-	// `github_actions`: `repository` (owner/name) and `workflow`
-	// (filename including extension) are required; `ref` and
-	// `environment` are optional and narrow the match further.
-	//
-	// Values are matched exactly and are case-sensitive.
-	Claims map[string]string `json:"claims"`
-
-	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
-	// additive registry entries and appear here as new enum members (spec §4.4).
-	// Clients MUST tolerate unknown values in responses.
-	Provider Provider `json:"provider"`
-}
-
 // CreateCheckoutSessionJSONRequestBody defines body for CreateCheckoutSession for application/json ContentType.
 type CreateCheckoutSessionJSONRequestBody CreateCheckoutSessionJSONBody
 
@@ -623,56 +727,4 @@ type RegisterBuildJSONRequestBody = BuildRegistration
 type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
 
 // CreateTrustDeclarationJSONRequestBody defines body for CreateTrustDeclaration for application/json ContentType.
-type CreateTrustDeclarationJSONRequestBody CreateTrustDeclarationJSONBody
-
-// AsClaimMismatchProblem returns the union data inside the RegisterBuild403ApplicationProblemPlusJSONResponseBody as a ClaimMismatchProblem
-func (t RegisterBuild403ApplicationProblemPlusJSONResponseBody) AsClaimMismatchProblem() (ClaimMismatchProblem, error) {
-	var body ClaimMismatchProblem
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromClaimMismatchProblem overwrites any union data inside the RegisterBuild403ApplicationProblemPlusJSONResponseBody as the provided ClaimMismatchProblem
-func (t *RegisterBuild403ApplicationProblemPlusJSONResponseBody) FromClaimMismatchProblem(v ClaimMismatchProblem) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// AsPlanLimitProblem returns the union data inside the RegisterBuild403ApplicationProblemPlusJSONResponseBody as a PlanLimitProblem
-func (t RegisterBuild403ApplicationProblemPlusJSONResponseBody) AsPlanLimitProblem() (PlanLimitProblem, error) {
-	var body PlanLimitProblem
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromPlanLimitProblem overwrites any union data inside the RegisterBuild403ApplicationProblemPlusJSONResponseBody as the provided PlanLimitProblem
-func (t *RegisterBuild403ApplicationProblemPlusJSONResponseBody) FromPlanLimitProblem(v PlanLimitProblem) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// AsProblem returns the union data inside the RegisterBuild403ApplicationProblemPlusJSONResponseBody as a Problem
-func (t RegisterBuild403ApplicationProblemPlusJSONResponseBody) AsProblem() (Problem, error) {
-	var body Problem
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromProblem overwrites any union data inside the RegisterBuild403ApplicationProblemPlusJSONResponseBody as the provided Problem
-func (t *RegisterBuild403ApplicationProblemPlusJSONResponseBody) FromProblem(v Problem) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-func (t RegisterBuild403ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *RegisterBuild403ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
+type CreateTrustDeclarationJSONRequestBody = CreateTrustDeclarationRequest

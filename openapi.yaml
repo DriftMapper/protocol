@@ -43,8 +43,26 @@ info:
     the previous tag.
 
     Clients MUST ignore unknown response fields. Servers MUST reject unknown request
-    body fields (see `unknown_field` problem type) rather than silently dropping
-    them — silent drops turn a client bug into missing data discovered months later.
+    body fields (see the `unknown_field` error code below) rather than silently
+    dropping them — silent drops turn a client bug into missing data discovered
+    months later.
+
+    ## Response envelope
+
+    Every response is one JSON object with exactly one of `data`/`error` set —
+    never both, never neither:
+
+    - **Success**: `{"data": <schema>}`. `data` is the operation's documented
+      response schema (a resource, or `{"data": [...], "page": {...}}` for a
+      paginated list, itself nested inside the outer `data`).
+    - **Failure**: `{"error": {"code", "message", "details"}}`, always
+      `Content-Type: application/json` (never `application/problem+json` — this
+      is a from-scratch envelope, not RFC 9457). `code` is the stable,
+      machine-readable identifier clients branch on; `message` is a human-
+      readable string that may be reworded without a version bump; `details` is
+      present only for errors with structured, error-specific fields a client
+      can act on (e.g. `claim_mismatch`'s `mismatched_claim`/`expected`/
+      `actual` — spec §4.5) and is absent otherwise. See the `Error` schema.
 
     ## Authentication
 
@@ -154,15 +172,13 @@ paths:
           description: Build registered.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Build'
+              schema: { $ref: '#/components/schemas/BuildResponse' }
         '200':
           description: |
             Identical build already registered; existing record returned unchanged.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Build'
+              schema: { $ref: '#/components/schemas/BuildResponse' }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -171,14 +187,14 @@ paths:
           description: |
             Token is signature-valid but not authorized to register this build.
             Includes the claim-mismatch case, which names the specific mismatched
-            field rather than failing generically (spec §4.5).
+            field rather than failing generically (spec §4.5), and the plan-limit
+            case, where confirming would exceed the org's slot allowance. Both are
+            reported via `error.code` (`claim_mismatch` / `plan_limit`) with the
+            corresponding fields under `error.details` — see `ClaimMismatchDetails`
+            / `PlanLimitDetails`.
           content:
-            application/problem+json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/ClaimMismatchProblem'
-                  - $ref: '#/components/schemas/PlanLimitProblem'
-                  - $ref: '#/components/schemas/Problem'
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
@@ -210,14 +226,7 @@ paths:
           description: A page of builds, newest first.
           content:
             application/json:
-              schema:
-                type: object
-                required: [data, page]
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/Build' }
-                  page: { $ref: '#/components/schemas/PageInfo' }
+              schema: { $ref: '#/components/schemas/BuildListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -240,7 +249,7 @@ paths:
           description: Build detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Build' }
+              schema: { $ref: '#/components/schemas/BuildResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -291,14 +300,14 @@ paths:
           description: URL registered; polling begins on the next scheduled cycle.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MonitoredUrl' }
+              schema: { $ref: '#/components/schemas/MonitoredUrlResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
           description: This URL is already registered for this repository.
           content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
@@ -320,14 +329,7 @@ paths:
           description: A page of monitored URLs.
           content:
             application/json:
-              schema:
-                type: object
-                required: [data, page]
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/MonitoredUrl' }
-                  page: { $ref: '#/components/schemas/PageInfo' }
+              schema: { $ref: '#/components/schemas/MonitoredUrlListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -352,7 +354,7 @@ paths:
           description: Monitored URL detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MonitoredUrl' }
+              schema: { $ref: '#/components/schemas/MonitoredUrlResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -412,37 +414,45 @@ paths:
           description: A page of drift events, newest first.
           content:
             application/json:
-              schema:
-                type: object
-                required: [data, page]
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/DriftEvent' }
-                  page: { $ref: '#/components/schemas/PageInfo' }
+              schema: { $ref: '#/components/schemas/DriftEventListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /v1/trust-declarations:
+  /v1/orgs/{slug}/trust-declarations:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
     post:
       operationId: createTrustDeclaration
       summary: Declare an OIDC trust relationship for a repository
       description: |
-        Human-only. A workload token can never create a trust declaration — that
-        would let a compromised workflow grant itself access to new repositories.
+        Human-only, admin+ role required — same as every other `/v1/orgs/{slug}/...`
+        route. A workload token can never reach this operation, since it is never
+        authenticated via `userSession` at all — that's what stops a compromised
+        workflow from granting itself access to new repositories.
+
+        **Org-scoped by URL, not by a flat top-level path.** This deviates from an
+        earlier draft of this document, which had `POST /v1/trust-declarations` with
+        org resolved from an implicit "current session org." Every other org-scoped
+        dashboard resource in this API resolves its org from the URL's `{slug}`, and
+        this operation is no exception — corrected to match (`x-stability: dashboard`,
+        so this was free to change; nothing was ever pinned to the old shape).
 
         The declaration is **provisional**: it grants nothing, consumes no plan slot,
-        and can be created by anyone. It is confirmed by the first signature-valid
-        token whose claims match it, which is what proves control of the repository
-        (spec §4.5). Because a squatter can never produce such a token, multiple
-        orgs may safely hold provisional declarations for the same repository; the
-        first confirmed wins and the others are invalidated.
+        and can be created by any admin/owner. It is confirmed by the first signature-
+        valid token whose claims match it, which is what proves control of the
+        repository (spec §4.5). Because a squatter can never produce such a token,
+        multiple orgs may safely hold provisional declarations for the same
+        repository; the first confirmed wins and the others are invalidated.
 
-        Unconfirmed declarations expire.
+        Unconfirmed declarations expire (`expires_at`, derived — never a stored
+        lifecycle column; see `status`).
 
-        The required `claims` fields are determined by the selected provider and are
-        driven by the same claim-mapping registry the server uses for verification
-        (spec §4.3) — adding a provider adds its form fields as a consequence.
+        `provider`/`workflow`/`ref`/`environment` are the claim-mapping fields the
+        confirming token is matched against (spec §4.3); `ref`/`environment` are
+        optional wildcards when omitted. `workflow` is matched against the bare
+        filename, not a raw `workflow_ref` claim — the server normalizes GitHub's
+        `owner/repo/.github/workflows/ci.yml@refs/heads/main` shape down to `ci.yml`
+        before comparing.
       tags: [trust]
       x-stability: dashboard
       security:
@@ -451,76 +461,58 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [provider, claims]
-              properties:
-                provider:
-                  $ref: '#/components/schemas/Provider'
-                claims:
-                  type: object
-                  description: |
-                    Provider-specific claim values to match against. For
-                    `github_actions`: `repository` (owner/name) and `workflow`
-                    (filename including extension) are required; `ref` and
-                    `environment` are optional and narrow the match further.
-
-                    Values are matched exactly and are case-sensitive.
-                  additionalProperties:
-                    type: string
-                    maxLength: 512
+            schema: { $ref: '#/components/schemas/CreateTrustDeclarationRequest' }
       responses:
         '201':
           description: Provisional declaration created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TrustDeclaration' }
+              schema: { $ref: '#/components/schemas/TrustDeclarationResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
     get:
       operationId: listTrustDeclarations
       summary: List this organization's trust declarations
+      description: |
+        Returns every declaration the org holds, any lifecycle state, newest first.
+        Not yet paginated — `data` is the full list, with no `page` envelope. Kept as
+        a placeholder-free plain list rather than documenting `page`/`cursor` fields
+        the server doesn't populate.
       tags: [trust]
       x-stability: dashboard
       security:
         - userSession: []
-      parameters:
-        - name: status
-          in: query
-          schema: { $ref: '#/components/schemas/TrustDeclarationStatus' }
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/Limit'
       responses:
         '200':
-          description: A page of trust declarations.
+          description: This organization's trust declarations.
           content:
             application/json:
-              schema:
-                type: object
-                required: [data, page]
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/TrustDeclaration' }
-                  page: { $ref: '#/components/schemas/PageInfo' }
+              schema: { $ref: '#/components/schemas/TrustDeclarationListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /v1/trust-declarations/{trustDeclarationId}:
+  /v1/orgs/{slug}/trust-declarations/{id}:
     parameters:
-      - name: trustDeclarationId
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: id
         in: path
         required: true
-        schema: { type: string }
+        schema: { type: integer, format: int64 }
     delete:
       operationId: deleteTrustDeclaration
       summary: Revoke a trust declaration
       description: |
-        Revoking a confirmed declaration unlinks the repository and frees its plan
-        slot. Subsequent builds from that repository are rejected. Existing build
-        records and drift history are retained.
+        Admin+ role required. Revoking a confirmed declaration unlinks the repository
+        and frees its plan slot. Subsequent builds from that repository are rejected.
+        Existing build records and drift history are retained — nothing else in the
+        schema references a trust declaration by foreign key, so nothing else is
+        touched by the delete.
       tags: [trust]
       x-stability: dashboard
       security:
@@ -530,6 +522,8 @@ paths:
           description: Revoked.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -549,14 +543,7 @@ paths:
           description: A page of confirmed repositories.
           content:
             application/json:
-              schema:
-                type: object
-                required: [data, page]
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/Repository' }
-                  page: { $ref: '#/components/schemas/PageInfo' }
+              schema: { $ref: '#/components/schemas/RepositoryListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -573,7 +560,7 @@ paths:
           description: Organization detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Organization' }
+              schema: { $ref: '#/components/schemas/OrganizationResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -608,9 +595,13 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [checkout_url]
+                required: [data]
                 properties:
-                  checkout_url: { type: string, format: uri }
+                  data:
+                    type: object
+                    required: [checkout_url]
+                    properties:
+                      checkout_url: { type: string, format: uri }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -638,9 +629,13 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [portal_url]
+                required: [data]
                 properties:
-                  portal_url: { type: string, format: uri }
+                  data:
+                    type: object
+                    required: [portal_url]
+                    properties:
+                      portal_url: { type: string, format: uri }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -659,7 +654,7 @@ components:
     userSession:
       type: apiKey
       in: cookie
-      name: dm_session
+      name: wos-session
       description: WorkOS AuthKit session cookie (spec §4A).
 
   parameters:
@@ -669,6 +664,12 @@ components:
       required: true
       schema: { type: string }
       description: Opaque, server-issued build-instance ID.
+    OrgSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+      description: The organization's URL slug.
     Cursor:
       name: cursor
       in: query
@@ -687,26 +688,33 @@ components:
     BadRequest:
       description: Malformed request.
       content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     Unauthorized:
       description: Missing, expired, or invalid credentials.
       content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: |
+        Authenticated, but not permitted to perform this action — e.g. a member
+        role attempting an admin+-only trust-declaration mutation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     NotFound:
       description: |
         No such resource, or the caller is not entitled to know it exists. These are
         deliberately indistinguishable — a distinguishable 403 would let an
         unauthorized caller enumerate valid build-instance IDs.
       content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     UnprocessableEntity:
       description: Well-formed request that violates a documented constraint.
       content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   schemas:
 
@@ -716,7 +724,11 @@ components:
         CI provider identity. v1 supports GitHub Actions only; further providers are
         additive registry entries and appear here as new enum members (spec §4.4).
         Clients MUST tolerate unknown values in responses.
-      enum: [github_actions]
+
+        `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+        server-side), not a literal "GitHub Actions" spelling — matches what every
+        `provider`/`claims.Issuer` value on the wire actually contains.
+      enum: [github]
 
     Plan:
       type: string
@@ -843,7 +855,13 @@ components:
         ref: { type: string }
         workflow: { type: string }
         run_id: { type: string }
-        run_attempt: { type: integer }
+        run_attempt:
+          type: string
+          description: |
+            A passthrough OIDC claim value (GitHub's `run_attempt` claim is itself a
+            string), never parsed or compared numerically server-side — only used as
+            one input to the content-address tuple (spec §2.5a). Typed as a string
+            rather than `integer` for that reason.
         trigger_event: { type: string }
         built_at: { type: string, format: date-time }
         registered_at: { type: string, format: date-time }
@@ -855,6 +873,25 @@ components:
             `build-info.html`. Server-provided so the CLI never constructs it and
             cannot drift from server routing.
         metadata: { $ref: '#/components/schemas/BuildMetadata' }
+
+    BuildResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Build' }
+
+    BuildListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, page]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Build' }
+            page: { $ref: '#/components/schemas/PageInfo' }
 
     MonitoredUrl:
       type: object
@@ -877,6 +914,25 @@ components:
             When the build ID at this URL last changed — not when it was last
             polled. Poll timestamps are not stored (spec §2.6).
         created_at: { type: string, format: date-time }
+
+    MonitoredUrlResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/MonitoredUrl' }
+
+    MonitoredUrlListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, page]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/MonitoredUrl' }
+            page: { $ref: '#/components/schemas/PageInfo' }
 
     IntegrationHealth:
       type: string
@@ -916,6 +972,19 @@ components:
         current_health: { $ref: '#/components/schemas/IntegrationHealth' }
         observed_at: { type: string, format: date-time }
 
+    DriftEventListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, page]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/DriftEvent' }
+            page: { $ref: '#/components/schemas/PageInfo' }
+
     TrustDeclarationStatus:
       type: string
       description: |
@@ -926,25 +995,77 @@ components:
         - `expired` — never confirmed within the expiry window.
       enum: [provisional, confirmed, invalidated, expired]
 
+    CreateTrustDeclarationRequest:
+      type: object
+      required: [provider, repository, workflow]
+      properties:
+        provider: { $ref: '#/components/schemas/Provider' }
+        repository:
+          type: string
+          description: '`owner/name`. Unverified until confirmation.'
+        workflow:
+          type: string
+          description: |
+            Filename including extension (e.g. `ci.yml`), matched against the bare
+            filename extracted from a `workflow_ref`-shaped claim — never the raw
+            claim value. Required: an empty/omitted `workflow` would otherwise match
+            any workflow in the repository, which is not this operation's default.
+        ref:
+          type: string
+          description: Optional. Omitted/empty matches any ref.
+        environment:
+          type: string
+          description: Optional. Omitted/empty matches any environment.
+
     TrustDeclaration:
       type: object
-      required: [trust_declaration_id, provider, claims, status, created_at]
+      required: [id, provider, repository, workflow, status, expires_at, created_at]
       properties:
-        trust_declaration_id: { type: string }
+        id:
+          type: integer
+          format: int64
         provider: { $ref: '#/components/schemas/Provider' }
-        claims:
-          type: object
-          additionalProperties: { type: string }
+        repository:
+          type: string
+          description: '`owner/name`, as declared. Unverified until confirmation.'
+        workflow: { type: string }
+        ref:
+          type: string
+          description: Absent means "any ref accepted."
+        environment:
+          type: string
+          description: Absent means "any environment accepted."
         status: { $ref: '#/components/schemas/TrustDeclarationStatus' }
         repository_id:
-          type: string
-          description: Populated on confirmation.
+          type: integer
+          format: int64
+          description: |
+            Populated on confirmation. This is Driftmapper's internal repository id
+            (`repositories.id`), NOT the provider's stable repository id returned as
+            `Repository.repository_id` / `Build.repository_id` elsewhere in this API
+            — those two identifier spaces are not directly comparable today. Worth
+            resolving before a client tries to correlate a confirmed declaration with
+            its `/v1/repos` entry.
         confirmed_at: { type: string, format: date-time }
         expires_at:
           type: string
           format: date-time
           description: Applies while `provisional`.
         created_at: { type: string, format: date-time }
+
+    TrustDeclarationResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/TrustDeclaration' }
+
+    TrustDeclarationListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/TrustDeclaration' }
 
     Repository:
       type: object
@@ -962,6 +1083,19 @@ components:
         latest_build_instance_id: { type: string }
         linked_at: { type: string, format: date-time }
 
+    RepositoryListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, page]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Repository' }
+            page: { $ref: '#/components/schemas/PageInfo' }
+
     Organization:
       type: object
       required: [organization_id, name, plan, slots_used]
@@ -977,6 +1111,12 @@ components:
           description: Null on Enterprise, which is not gated on repository count.
         sso_enforced: { type: boolean }
 
+    OrganizationResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Organization' }
+
     PageInfo:
       type: object
       required: [has_more]
@@ -986,60 +1126,75 @@ components:
           type: string
           description: Present only when `has_more` is true.
 
-    Problem:
+    Error:
       type: object
-      description: RFC 9457 problem details. Served as `application/problem+json`.
-      required: [type, title, status]
+      description: |
+        The `error` half of the response envelope (see "Response envelope" above).
+        Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
+        actually emits (`internal/api/respond.go`'s `errorBody`).
+      required: [code, message]
       properties:
-        type:
+        code:
           type: string
-          format: uri
           description: |
-            Stable, resolvable problem-type URI. Machine-readable identity of the
-            error — clients branch on this, never on `title` or `detail`, both of
-            which may be reworded without a version bump.
-        title: { type: string }
-        status: { type: integer }
-        detail: { type: string }
-        instance: { type: string }
-
-    ClaimMismatchProblem:
-      allOf:
-        - $ref: '#/components/schemas/Problem'
-        - type: object
+            Stable, machine-readable identity of the error. Clients branch on this,
+            never on `message`, which may be reworded without a version bump.
+            Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
+            `unknown_field`, `claim_mismatch`, `no_trust_declaration`.
+        message:
+          type: string
+          description: Human-readable, safe to display directly.
+        details:
+          type: object
           description: |
-            A signature-valid token whose claims did not match any trust declaration.
+            Structured, error-specific fields a client can act on programmatically.
+            Present only for errors that have them (currently `claim_mismatch` —
+            see `ClaimMismatchDetails` — and, once slot enforcement lands,
+            `plan_limit` — see `PlanLimitDetails`); absent otherwise.
+          additionalProperties: true
 
-            The mismatched field is named explicitly rather than returning a generic
-            authentication failure. This is the single most likely point of
-            first-run abandonment — a case-sensitive workflow filename mismatch is a
-            well-documented source of setup friction in comparable systems (spec
-            §4.5) — and a specific error is cheap to produce and turns a dead end
-            into a one-line fix.
-          required: [mismatched_claim, expected, actual]
-          properties:
-            mismatched_claim:
-              type: string
-              description: e.g. `workflow`, `repository`, `ref`, `environment`.
-            expected:
-              type: string
-              description: Value from the trust declaration.
-            actual:
-              type: string
-              description: |
-                Value from the verified token. Safe to echo: the caller demonstrably
-                already holds this token.
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/Error' }
 
-    PlanLimitProblem:
-      allOf:
-        - $ref: '#/components/schemas/Problem'
-        - type: object
+    ClaimMismatchDetails:
+      type: object
+      description: |
+        `error.details` shape when `error.code` is `claim_mismatch`: a signature-
+        valid token whose claims did not match any trust declaration.
+
+        The mismatched field is named explicitly rather than returning a generic
+        authentication failure. This is the single most likely point of first-run
+        abandonment — a case-sensitive workflow filename mismatch is a well-
+        documented source of setup friction in comparable systems (spec §4.5) —
+        and a specific error is cheap to produce and turns a dead end into a
+        one-line fix.
+      required: [mismatched_claim, expected, actual]
+      properties:
+        mismatched_claim:
+          type: string
+          description: e.g. `workflow`, `repository`, `ref`, `environment`.
+        expected:
+          type: string
+          description: Value from the trust declaration.
+        actual:
+          type: string
           description: |
-            Confirming this repository would exceed the plan's slot allowance.
-            Returned at confirmation time rather than declaration time, so an
-            unconfirmed declaration never consumes a slot (spec §4.5).
-          required: [slots_used, slots_included]
-          properties:
-            slots_used: { type: integer }
-            slots_included: { type: integer }
-            upgrade_url: { type: string, format: uri }
+            Value from the verified token. Safe to echo: the caller demonstrably
+            already holds this token.
+
+    PlanLimitDetails:
+      type: object
+      description: |
+        `error.details` shape when `error.code` is `plan_limit`: confirming this
+        repository would exceed the plan's slot allowance. Returned at confirmation
+        time rather than declaration time, so an unconfirmed declaration never
+        consumes a slot (spec §4.5). Not yet emitted by the server — plan-slot
+        enforcement lands in DRFT-22 — documented here as the shape it will use.
+      required: [slots_used, slots_included]
+      properties:
+        slots_used: { type: integer }
+        slots_included: { type: integer }
+        upgrade_url: { type: string, format: uri }
