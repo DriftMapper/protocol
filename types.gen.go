@@ -412,6 +412,30 @@ type ErrorEnvelope struct {
 	Error Error `json:"error"`
 }
 
+// ExchangeTokenRequest defines model for ExchangeTokenRequest.
+type ExchangeTokenRequest struct {
+	// Code Authorization code the SPA's `/callback` route received from WorkOS.
+	Code string `json:"code"`
+
+	// CodeVerifier PKCE verifier matching the challenge sent to WorkOS's `/authorize`.
+	CodeVerifier string `json:"code_verifier"`
+}
+
+// ExchangeTokenResponse defines model for ExchangeTokenResponse.
+type ExchangeTokenResponse struct {
+	Data struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+
+		// User The subset of WorkOS's own user object the dashboard SPA needs, returned
+		// straight from token exchange — WorkOS's string user id, not this API's
+		// local numeric one (see `User` below). Deliberately not the same shape as
+		// `User`: this one is who WorkOS says signed in; `User` is this system's own
+		// record, fetched separately at `GET /v1/me` once a session exists.
+		User WorkosUser `json:"user"`
+	} `json:"data"`
+}
+
 // IntegrationHealth Whether Driftmapper can do its job at this URL — not whether the site is up.
 //
 //   - `pending` — registered, not yet successfully polled.
@@ -622,10 +646,36 @@ type TrustDeclarationResponse struct {
 //   - `expired` — never confirmed within the expiry window.
 type TrustDeclarationStatus string
 
+// User This system's own local mirror of the signed-in WorkOS user.
+type User struct {
+	CreatedAt          time.Time `json:"created_at"`
+	Email              string    `json:"email"`
+	EmailNotifications bool      `json:"email_notifications"`
+	EmailVerified      bool      `json:"email_verified"`
+	Id                 int64     `json:"id"`
+}
+
+// UserResponse defines model for UserResponse.
+type UserResponse struct {
+	// Data This system's own local mirror of the signed-in WorkOS user.
+	Data User `json:"data"`
+}
+
 // Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
 // This is what gates the Free tier's public-repo allowance (spec §6A), so it is
 // enforced from the signed token with no VCS API call.
 type Visibility string
+
+// WorkosUser The subset of WorkOS's own user object the dashboard SPA needs, returned
+// straight from token exchange — WorkOS's string user id, not this API's
+// local numeric one (see `User` below). Deliberately not the same shape as
+// `User`: this one is who WorkOS says signed in; `User` is this system's own
+// record, fetched separately at `GET /v1/me` once a session exists.
+type WorkosUser struct {
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Id            string `json:"id"`
+}
 
 // BuildInstanceId defines model for BuildInstanceId.
 type BuildInstanceId = string
@@ -648,11 +698,19 @@ type Forbidden = ErrorEnvelope
 // NotFound defines model for NotFound.
 type NotFound = ErrorEnvelope
 
+// ServiceUnavailable defines model for ServiceUnavailable.
+type ServiceUnavailable = ErrorEnvelope
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorEnvelope
 
 // UnprocessableEntity defines model for UnprocessableEntity.
 type UnprocessableEntity = ErrorEnvelope
+
+// UpdateEmailNotificationsJSONBody defines parameters for UpdateEmailNotifications.
+type UpdateEmailNotificationsJSONBody struct {
+	Enabled bool `json:"enabled"`
+}
 
 // CreateCheckoutSessionJSONBody defines parameters for CreateCheckoutSession.
 type CreateCheckoutSessionJSONBody struct {
@@ -718,6 +776,12 @@ type ListReposParams struct {
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
+
+// UpdateEmailNotificationsJSONRequestBody defines body for UpdateEmailNotifications for application/json ContentType.
+type UpdateEmailNotificationsJSONRequestBody UpdateEmailNotificationsJSONBody
+
+// ExchangeTokenJSONRequestBody defines body for ExchangeToken for application/json ContentType.
+type ExchangeTokenJSONRequestBody = ExchangeTokenRequest
 
 // CreateCheckoutSessionJSONRequestBody defines body for CreateCheckoutSession for application/json ContentType.
 type CreateCheckoutSessionJSONRequestBody CreateCheckoutSessionJSONBody
