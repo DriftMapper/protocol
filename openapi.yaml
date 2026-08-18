@@ -122,6 +122,11 @@ tags:
     description: OIDC trust declarations and repo linking (spec §4.5).
   - name: repos
     description: Confirmed repos and plan-slot usage.
+  - name: orgs
+    description: |
+      Organization membership/switching for the signed-in user — which orgs they
+      belong to and at what role. Distinct from `billing`, which covers a single
+      already-resolved org's plan and slot usage.
   - name: billing
     description: Subscription and checkout.
 
@@ -506,6 +511,61 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DriftEventListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/orgs:
+    post:
+      operationId: createOrg
+      summary: Create an organization
+      description: |
+        Creates a new, non-personal organization via the WorkOS API and adds the
+        caller as its `owner` — distinct from the personal org every user already
+        has, which is provisioned automatically on first sign-in and never created
+        through this endpoint.
+      tags: [orgs]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 80 }
+      responses:
+        '201':
+          description: Organization created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listOrgs
+      summary: List the signed-in user's organizations
+      description: |
+        Every organization the caller is a member of, each with the caller's role
+        in it. This is what the dashboard SPA's org context/switcher resolves
+        against — not paginated (a user's org count is small by construction: one
+        personal org plus however many they've created or been invited to).
+
+        Ordered personal org first, then by creation date ascending.
+      tags: [orgs]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The caller's organizations.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1315,6 +1375,58 @@ components:
               type: array
               items: { $ref: '#/components/schemas/Repository' }
             page: { $ref: '#/components/schemas/PageInfo' }
+
+    # Org/OrgWithRole (below) are deliberately distinct from Organization
+    # (further below): this pair is the bare membership-list shape behind
+    # `POST /v1/orgs` and `GET /v1/orgs` (create + switcher), while
+    # Organization is `GET /v1/orgs/{slug}/organization`'s billing/plan/
+    # slot-usage shape for one already-resolved org. Same underlying table,
+    # two different response contracts for two different callers.
+    Org:
+      type: object
+      required: [id, slug, name, personal, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slug: { type: string }
+        name: { type: string }
+        personal:
+          type: boolean
+          description: True for the user's auto-created personal org.
+        created_at: { type: string, format: date-time }
+
+    OrgWithRole:
+      type: object
+      required: [id, slug, name, personal, created_at, role]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slug: { type: string }
+        name: { type: string }
+        personal:
+          type: boolean
+          description: True for the user's auto-created personal org.
+        created_at: { type: string, format: date-time }
+        role:
+          type: string
+          enum: [owner, admin, member]
+          description: The caller's role in this organization.
+
+    OrgResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Org' }
+
+    OrgListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/OrgWithRole' }
 
     Organization:
       type: object
