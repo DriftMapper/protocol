@@ -35,10 +35,32 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # dashboard-tier operations (x-stability: dashboard) are free to change
+      # without a version bump (openapi.yaml's compatibility policy) — the
+      # public tier alone is what this gate must hold to N-2 compatibility.
+      # oasdiff's own --filter-extension can't express a value-based split
+      # like this (matches extension *name*, not an x-stability *value*), so
+      # scripts/strip_dashboard_tier.py removes dashboard-tier paths from
+      # each side of the diff independently, using each file's own
+      # x-stability values, before oasdiff ever sees them. See that script's
+      # docstring for why a marker-extension approach was tried and rejected.
+      #
+      # Stripped files are written inside the checked-out workspace, not
+      # /tmp: oasdiff/oasdiff-action runs as a Docker action, and only the
+      # workspace is guaranteed to be mounted into its container.
+      - name: Strip dashboard-tier paths before diffing
+        if: steps.prev-tag.outputs.skip == 'false'
+        run: |
+          pip install --quiet pyyaml
+          git show '${{ steps.prev-tag.outputs.tag }}:openapi.yaml' > base-full.yaml
+          python3 scripts/strip_dashboard_tier.py base-full.yaml base-public.yaml
+          python3 scripts/strip_dashboard_tier.py openapi.yaml revision-public.yaml
+          rm base-full.yaml
+
       - uses: oasdiff/oasdiff-action/breaking@v0
         if: steps.prev-tag.outputs.skip == 'false'
         with:
-          base: '${{ steps.prev-tag.outputs.tag }}:openapi.yaml'
-          revision: 'HEAD:openapi.yaml'
+          base: 'base-public.yaml'
+          revision: 'revision-public.yaml'
           fail-on: WARN
           github-token: ${{ github.token }}

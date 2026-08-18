@@ -40,7 +40,10 @@ info:
     for `public` operations. Within a major version, only additive changes are
     permitted: new optional request fields, new response fields, new enum members in
     response-only positions. CI gates on `oasdiff` breaking-change detection against
-    the previous tag.
+    the previous tag, scoped to `public`-tier operations only — `dashboard`-tier
+    paths are stripped from both sides of the diff before `oasdiff` runs (see
+    `.github/workflows/oasdiff.yml` and `scripts/strip_dashboard_tier.py`), since
+    that tier is explicitly exempt from this compatibility window.
 
     Clients MUST ignore unknown response fields. Servers MUST reject unknown request
     body fields (see the `unknown_field` error code below) rather than silently
