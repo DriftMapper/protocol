@@ -478,7 +478,11 @@ type Organization struct {
 	OrganizationId string `json:"organization_id"`
 	Plan           Plan   `json:"plan"`
 
-	// SlotsIncluded Null on Enterprise, which is not gated on repository count.
+	// SlotsIncluded Null whenever no slot limit is configured for the org's plan — always
+	// true for Enterprise (not gated on repository count), and also true for
+	// every plan today: slot-limit enforcement (spec §6A) has not shipped yet,
+	// so this field is unconditionally absent until it does. Clients must not
+	// infer a numeric default from its absence.
 	SlotsIncluded *int `json:"slots_included,omitempty"`
 
 	// SlotsUsed Private repositories consuming a plan slot.
@@ -661,19 +665,6 @@ type CreatePortalSessionJSONBody struct {
 	ReturnUrl string `json:"return_url"`
 }
 
-// ListBuildsParams defines parameters for ListBuilds.
-type ListBuildsParams struct {
-	// RepositoryId Filter to one repository.
-	RepositoryId    *string    `form:"repository_id,omitempty" json:"repository_id,omitempty"`
-	Ref             *string    `form:"ref,omitempty" json:"ref,omitempty"`
-	CommitSha       *string    `form:"commit_sha,omitempty" json:"commit_sha,omitempty"`
-	RegisteredAfter *time.Time `form:"registered_after,omitempty" json:"registered_after,omitempty"`
-
-	// Cursor Opaque cursor from a previous page's `next_cursor`.
-	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-}
-
 // ListDriftEventsParams defines parameters for ListDriftEvents.
 type ListDriftEventsParams struct {
 	RepositoryId   *string         `form:"repository_id,omitempty" json:"repository_id,omitempty"`
@@ -705,6 +696,20 @@ type CreateMonitoredUrlJSONBody struct {
 
 	// Url Absolute URL of the deployed `build-info.html`. HTTPS only.
 	Url string `json:"url"`
+}
+
+// ListBuildsParams defines parameters for ListBuilds.
+type ListBuildsParams struct {
+	// RepositoryId Filter to one repository.
+	RepositoryId     *string    `form:"repository_id,omitempty" json:"repository_id,omitempty"`
+	Ref              *string    `form:"ref,omitempty" json:"ref,omitempty"`
+	CommitSha        *string    `form:"commit_sha,omitempty" json:"commit_sha,omitempty"`
+	RegisteredAfter  *time.Time `form:"registered_after,omitempty" json:"registered_after,omitempty"`
+	RegisteredBefore *time.Time `form:"registered_before,omitempty" json:"registered_before,omitempty"`
+
+	// Cursor Opaque cursor from a previous page's `next_cursor`.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // ListReposParams defines parameters for ListRepos.
