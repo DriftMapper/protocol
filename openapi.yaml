@@ -198,38 +198,6 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
-    get:
-      operationId: listBuilds
-      summary: List builds
-      tags: [builds]
-      x-stability: dashboard
-      security:
-        - userSession: []
-      parameters:
-        - name: repository_id
-          in: query
-          schema: { type: string }
-          description: Filter to one repository.
-        - name: ref
-          in: query
-          schema: { type: string }
-        - name: commit_sha
-          in: query
-          schema: { type: string }
-        - name: registered_after
-          in: query
-          schema: { type: string, format: date-time }
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/Limit'
-      responses:
-        '200':
-          description: A page of builds, newest first.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/BuildListResponse' }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
   /v1/builds/{buildInstanceId}:
     parameters:
       - $ref: '#/components/parameters/BuildInstanceId'
@@ -527,10 +495,64 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /v1/repos:
+  /v1/orgs/{slug}/builds:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    get:
+      operationId: listBuilds
+      summary: List builds for one organization
+      description: |
+        Org-scoped by URL, same convention as every other dashboard-tier list in this
+        API (spec-internal note: originally drafted flat as `/v1/builds` with an
+        implicit "current org," corrected for the same reason
+        `createTrustDeclaration` was — there is no session-tracked "current org" a
+        flat path could resolve against, and a user may belong to more than one).
+        Unrelated to `POST /v1/builds` (`registerBuild`), which stays flat: a
+        workload OIDC token has no org/slug context at registration time, and the
+        server resolves the owning org from the confirming trust declaration
+        instead.
+      tags: [builds]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - name: repository_id
+          in: query
+          schema: { type: string }
+          description: Filter to one repository.
+        - name: ref
+          in: query
+          schema: { type: string }
+        - name: commit_sha
+          in: query
+          schema: { type: string }
+        - name: registered_after
+          in: query
+          schema: { type: string, format: date-time }
+        - name: registered_before
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of builds, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuildListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/repos:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
     get:
       operationId: listRepos
-      summary: List confirmed repositories and plan-slot usage
+      summary: List confirmed repositories for one organization
       tags: [repos]
       x-stability: dashboard
       security:
@@ -546,11 +568,17 @@ paths:
               schema: { $ref: '#/components/schemas/RepositoryListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
-  /v1/organization:
+  /v1/orgs/{slug}/organization:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
     get:
       operationId: getOrganization
-      summary: Current organization, plan, and slot usage
+      summary: One organization's plan and slot usage
       tags: [billing]
       x-stability: dashboard
       security:
@@ -563,6 +591,10 @@ paths:
               schema: { $ref: '#/components/schemas/OrganizationResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /v1/billing/checkout-session:
     post:
@@ -1108,7 +1140,12 @@ components:
           description: Private repositories consuming a plan slot.
         slots_included:
           type: integer
-          description: Null on Enterprise, which is not gated on repository count.
+          description: |
+            Null whenever no slot limit is configured for the org's plan — always
+            true for Enterprise (not gated on repository count), and also true for
+            every plan today: slot-limit enforcement (spec §6A) has not shipped yet,
+            so this field is unconditionally absent until it does. Clients must not
+            infer a numeric default from its absence.
         sso_enforced: { type: boolean }
 
     OrganizationResponse:
