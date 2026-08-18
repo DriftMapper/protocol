@@ -52,6 +52,27 @@ func (e IntegrationHealth) Valid() bool {
 	}
 }
 
+// Defines values for OrgWithRoleRole.
+const (
+	Admin  OrgWithRoleRole = "admin"
+	Member OrgWithRoleRole = "member"
+	Owner  OrgWithRoleRole = "owner"
+)
+
+// Valid indicates whether the value is a known member of the OrgWithRoleRole enum.
+func (e OrgWithRoleRole) Valid() bool {
+	switch e {
+	case Admin:
+		return true
+	case Member:
+		return true
+	case Owner:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Plan.
 const (
 	Enterprise Plan = "enterprise"
@@ -496,6 +517,44 @@ type MonitoredUrlResponse struct {
 	Data MonitoredUrl `json:"data"`
 }
 
+// Org defines model for Org.
+type Org struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+
+	// Personal True for the user's auto-created personal org.
+	Personal bool   `json:"personal"`
+	Slug     string `json:"slug"`
+}
+
+// OrgListResponse defines model for OrgListResponse.
+type OrgListResponse struct {
+	Data []OrgWithRole `json:"data"`
+}
+
+// OrgResponse defines model for OrgResponse.
+type OrgResponse struct {
+	Data Org `json:"data"`
+}
+
+// OrgWithRole defines model for OrgWithRole.
+type OrgWithRole struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+
+	// Personal True for the user's auto-created personal org.
+	Personal bool `json:"personal"`
+
+	// Role The caller's role in this organization.
+	Role OrgWithRoleRole `json:"role"`
+	Slug string          `json:"slug"`
+}
+
+// OrgWithRoleRole The caller's role in this organization.
+type OrgWithRoleRole string
+
 // Organization defines model for Organization.
 type Organization struct {
 	Name           string `json:"name"`
@@ -756,6 +815,11 @@ type CreateMonitoredUrlJSONBody struct {
 	Url string `json:"url"`
 }
 
+// CreateOrgJSONBody defines parameters for CreateOrg.
+type CreateOrgJSONBody struct {
+	Name string `json:"name"`
+}
+
 // ListBuildsParams defines parameters for ListBuilds.
 type ListBuildsParams struct {
 	// RepositoryId Filter to one repository.
@@ -794,6 +858,9 @@ type RegisterBuildJSONRequestBody = BuildRegistration
 
 // CreateMonitoredUrlJSONRequestBody defines body for CreateMonitoredUrl for application/json ContentType.
 type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
+
+// CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
+type CreateOrgJSONRequestBody CreateOrgJSONBody
 
 // CreateTrustDeclarationJSONRequestBody defines body for CreateTrustDeclaration for application/json ContentType.
 type CreateTrustDeclarationJSONRequestBody = CreateTrustDeclarationRequest
