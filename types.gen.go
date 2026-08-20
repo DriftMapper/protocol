@@ -52,21 +52,63 @@ func (e IntegrationHealth) Valid() bool {
 	}
 }
 
+// Defines values for MemberWithUserRole.
+const (
+	MemberWithUserRoleAdmin  MemberWithUserRole = "admin"
+	MemberWithUserRoleMember MemberWithUserRole = "member"
+	MemberWithUserRoleOwner  MemberWithUserRole = "owner"
+)
+
+// Valid indicates whether the value is a known member of the MemberWithUserRole enum.
+func (e MemberWithUserRole) Valid() bool {
+	switch e {
+	case MemberWithUserRoleAdmin:
+		return true
+	case MemberWithUserRoleMember:
+		return true
+	case MemberWithUserRoleOwner:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MembershipRole.
+const (
+	MembershipRoleAdmin  MembershipRole = "admin"
+	MembershipRoleMember MembershipRole = "member"
+	MembershipRoleOwner  MembershipRole = "owner"
+)
+
+// Valid indicates whether the value is a known member of the MembershipRole enum.
+func (e MembershipRole) Valid() bool {
+	switch e {
+	case MembershipRoleAdmin:
+		return true
+	case MembershipRoleMember:
+		return true
+	case MembershipRoleOwner:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OrgWithRoleRole.
 const (
-	Admin  OrgWithRoleRole = "admin"
-	Member OrgWithRoleRole = "member"
-	Owner  OrgWithRoleRole = "owner"
+	OrgWithRoleRoleAdmin  OrgWithRoleRole = "admin"
+	OrgWithRoleRoleMember OrgWithRoleRole = "member"
+	OrgWithRoleRoleOwner  OrgWithRoleRole = "owner"
 )
 
 // Valid indicates whether the value is a known member of the OrgWithRoleRole enum.
 func (e OrgWithRoleRole) Valid() bool {
 	switch e {
-	case Admin:
+	case OrgWithRoleRoleAdmin:
 		return true
-	case Member:
+	case OrgWithRoleRoleMember:
 		return true
-	case Owner:
+	case OrgWithRoleRoleOwner:
 		return true
 	default:
 		return false
@@ -124,6 +166,45 @@ func (e Visibility) Valid() bool {
 	case Private:
 		return true
 	case Public:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InviteMemberJSONBodyRole.
+const (
+	InviteMemberJSONBodyRoleAdmin  InviteMemberJSONBodyRole = "admin"
+	InviteMemberJSONBodyRoleMember InviteMemberJSONBodyRole = "member"
+)
+
+// Valid indicates whether the value is a known member of the InviteMemberJSONBodyRole enum.
+func (e InviteMemberJSONBodyRole) Valid() bool {
+	switch e {
+	case InviteMemberJSONBodyRoleAdmin:
+		return true
+	case InviteMemberJSONBodyRoleMember:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ChangeMemberRoleJSONBodyRole.
+const (
+	ChangeMemberRoleJSONBodyRoleAdmin  ChangeMemberRoleJSONBodyRole = "admin"
+	ChangeMemberRoleJSONBodyRoleMember ChangeMemberRoleJSONBodyRole = "member"
+	ChangeMemberRoleJSONBodyRoleOwner  ChangeMemberRoleJSONBodyRole = "owner"
+)
+
+// Valid indicates whether the value is a known member of the ChangeMemberRoleJSONBodyRole enum.
+func (e ChangeMemberRoleJSONBodyRole) Valid() bool {
+	switch e {
+	case ChangeMemberRoleJSONBodyRoleAdmin:
+		return true
+	case ChangeMemberRoleJSONBodyRoleMember:
+		return true
+	case ChangeMemberRoleJSONBodyRoleOwner:
 		return true
 	default:
 		return false
@@ -427,6 +508,49 @@ type ExchangeTokenResponse struct {
 //     deployment).
 type IntegrationHealth string
 
+// Invite defines model for Invite.
+type Invite struct {
+	Email string `json:"email"`
+
+	// ExpiresAt ISO-8601
+	ExpiresAt string `json:"expires_at"`
+
+	// Id Opaque WorkOS invitation id.
+	Id             string `json:"id"`
+	OrganizationId string `json:"organization_id"`
+	State          string `json:"state"`
+}
+
+// InviteResponse defines model for InviteResponse.
+type InviteResponse struct {
+	Data Invite `json:"data"`
+}
+
+// MemberWithUser defines model for MemberWithUser.
+type MemberWithUser struct {
+	CreatedAt time.Time          `json:"created_at"`
+	Email     string             `json:"email"`
+	Id        int64              `json:"id"`
+	OrgId     int64              `json:"org_id"`
+	Role      MemberWithUserRole `json:"role"`
+	UserId    int64              `json:"user_id"`
+}
+
+// MemberWithUserRole defines model for MemberWithUser.Role.
+type MemberWithUserRole string
+
+// Membership defines model for Membership.
+type Membership struct {
+	CreatedAt time.Time      `json:"created_at"`
+	Id        int64          `json:"id"`
+	OrgId     int64          `json:"org_id"`
+	Role      MembershipRole `json:"role"`
+	UserId    int64          `json:"user_id"`
+}
+
+// MembershipRole defines model for Membership.Role.
+type MembershipRole string
+
 // MonitoredUrl defines model for MonitoredUrl.
 type MonitoredUrl struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -486,6 +610,14 @@ type Org struct {
 // OrgListResponse defines model for OrgListResponse.
 type OrgListResponse struct {
 	Data []OrgWithRole `json:"data"`
+}
+
+// OrgMembersResponse defines model for OrgMembersResponse.
+type OrgMembersResponse struct {
+	Data struct {
+		Invites []Invite         `json:"invites"`
+		Members []MemberWithUser `json:"members"`
+	} `json:"data"`
 }
 
 // OrgResponse defines model for OrgResponse.
@@ -718,6 +850,11 @@ type CreateOrgJSONBody struct {
 	Name string `json:"name"`
 }
 
+// UpdateOrgJSONBody defines parameters for UpdateOrg.
+type UpdateOrgJSONBody struct {
+	Name string `json:"name"`
+}
+
 // ListBuildsParams defines parameters for ListBuilds.
 type ListBuildsParams struct {
 	// RepositoryId Filter to one repository.
@@ -731,6 +868,23 @@ type ListBuildsParams struct {
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
+
+// InviteMemberJSONBody defines parameters for InviteMember.
+type InviteMemberJSONBody struct {
+	Email string                   `json:"email"`
+	Role  InviteMemberJSONBodyRole `json:"role"`
+}
+
+// InviteMemberJSONBodyRole defines parameters for InviteMember.
+type InviteMemberJSONBodyRole string
+
+// ChangeMemberRoleJSONBody defines parameters for ChangeMemberRole.
+type ChangeMemberRoleJSONBody struct {
+	Role ChangeMemberRoleJSONBodyRole `json:"role"`
+}
+
+// ChangeMemberRoleJSONBodyRole defines parameters for ChangeMemberRole.
+type ChangeMemberRoleJSONBodyRole string
 
 // ListReposParams defines parameters for ListRepos.
 type ListReposParams struct {
@@ -759,6 +913,15 @@ type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
 
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody CreateOrgJSONBody
+
+// UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
+type UpdateOrgJSONRequestBody UpdateOrgJSONBody
+
+// InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
+type InviteMemberJSONRequestBody InviteMemberJSONBody
+
+// ChangeMemberRoleJSONRequestBody defines body for ChangeMemberRole for application/json ContentType.
+type ChangeMemberRoleJSONRequestBody ChangeMemberRoleJSONBody
 
 // AuthorizeRepositoryJSONRequestBody defines body for AuthorizeRepository for application/json ContentType.
 type AuthorizeRepositoryJSONRequestBody = RepositoryAuthorizeRequest
