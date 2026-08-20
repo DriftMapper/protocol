@@ -136,6 +136,42 @@ func (e Plan) Valid() bool {
 	}
 }
 
+// Defines values for PolicyState.
+const (
+	PolicyStateLive    PolicyState = "live"
+	PolicyStateRevoked PolicyState = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the PolicyState enum.
+func (e PolicyState) Valid() bool {
+	switch e {
+	case PolicyStateLive:
+		return true
+	case PolicyStateRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PolicyWithRepositoryState.
+const (
+	PolicyWithRepositoryStateLive    PolicyWithRepositoryState = "live"
+	PolicyWithRepositoryStateRevoked PolicyWithRepositoryState = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the PolicyWithRepositoryState enum.
+func (e PolicyWithRepositoryState) Valid() bool {
+	switch e {
+	case PolicyWithRepositoryStateLive:
+		return true
+	case PolicyWithRepositoryStateRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Provider.
 const (
 	Github Provider = "github"
@@ -666,6 +702,70 @@ type PageInfo struct {
 // Plan defines model for Plan.
 type Plan string
 
+// Policy defines model for Policy.
+type Policy struct {
+	BoundAt time.Time `json:"bound_at"`
+
+	// Environment Deployment-environment constraint. Null means unconstrained; an
+	// empty string is a real constraint meaning "must target no
+	// environment" (spec §4.5).
+	Environment *string `json:"environment,omitempty"`
+	Id          int64   `json:"id"`
+
+	// Ref Git ref constraint (e.g. `refs/heads/main`). Null means unconstrained.
+	Ref       *string     `json:"ref,omitempty"`
+	RevokedAt *time.Time  `json:"revoked_at,omitempty"`
+	State     PolicyState `json:"state"`
+
+	// Workflow Bare workflow-filename constraint (e.g. `ci.yml`). Null means
+	// unconstrained — redemption's default policy leaves it unset.
+	Workflow *string `json:"workflow,omitempty"`
+}
+
+// PolicyState defines model for Policy.State.
+type PolicyState string
+
+// PolicyListResponse defines model for PolicyListResponse.
+type PolicyListResponse struct {
+	Data []PolicyWithRepository `json:"data"`
+}
+
+// PolicyWithRepository defines model for PolicyWithRepository.
+type PolicyWithRepository struct {
+	BoundAt time.Time `json:"bound_at"`
+
+	// Environment Deployment-environment constraint. Null means unconstrained; an
+	// empty string is a real constraint meaning "must target no
+	// environment" (spec §4.5).
+	Environment *string `json:"environment,omitempty"`
+	Id          int64   `json:"id"`
+
+	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
+	// additive registry entries and appear here as new enum members (spec §4.4).
+	// Clients MUST tolerate unknown values in responses.
+	//
+	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+	// server-side), not a literal "GitHub Actions" spelling — matches what every
+	// `provider`/`claims.Issuer` value on the wire actually contains.
+	Provider Provider `json:"provider"`
+
+	// Ref Git ref constraint (e.g. `refs/heads/main`). Null means unconstrained.
+	Ref          *string `json:"ref,omitempty"`
+	RepositoryId string  `json:"repository_id"`
+
+	// RepositoryPath `owner/name` at time of binding.
+	RepositoryPath string                    `json:"repository_path"`
+	RevokedAt      *time.Time                `json:"revoked_at,omitempty"`
+	State          PolicyWithRepositoryState `json:"state"`
+
+	// Workflow Bare workflow-filename constraint (e.g. `ci.yml`). Null means
+	// unconstrained — redemption's default policy leaves it unset.
+	Workflow *string `json:"workflow,omitempty"`
+}
+
+// PolicyWithRepositoryState defines model for PolicyWithRepository.State.
+type PolicyWithRepositoryState string
+
 // Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 // additive registry entries and appear here as new enum members (spec §4.4).
 // Clients MUST tolerate unknown values in responses.
@@ -700,8 +800,9 @@ type Repository struct {
 }
 
 // RepositoryAuthorization Confirmation that a challenge was redeemed and the repository is now
-// bound — not a full policy record (constraints, timestamps; see the
-// dashboard-tier policy-management operations).
+// bound — not a full policy record (constraints, timestamps; see
+// `Policy`/`listPolicies`, the dashboard-tier policy-management
+// operations, DRFT-63).
 type RepositoryAuthorization struct {
 	OrganizationId string `json:"organization_id"`
 
@@ -712,8 +813,9 @@ type RepositoryAuthorization struct {
 // RepositoryAuthorizationResponse defines model for RepositoryAuthorizationResponse.
 type RepositoryAuthorizationResponse struct {
 	// Data Confirmation that a challenge was redeemed and the repository is now
-	// bound — not a full policy record (constraints, timestamps; see the
-	// dashboard-tier policy-management operations).
+	// bound — not a full policy record (constraints, timestamps; see
+	// `Policy`/`listPolicies`, the dashboard-tier policy-management
+	// operations, DRFT-63).
 	Data RepositoryAuthorization `json:"data"`
 }
 
@@ -733,6 +835,18 @@ type RepositoryListResponse struct {
 		Items []Repository `json:"items"`
 		Page  PageInfo     `json:"page"`
 	} `json:"data"`
+}
+
+// UpdatePolicyRequest Full-replace on the three constrainable dimensions: omit a property
+// or send it null to leave/set that dimension unconstrained, resubmit
+// the current value for anything you're not changing. No
+// `repository_id`/`issuer`/`org_id` property exists here — rebinding a
+// policy to a different repository or org is a new challenge (DRFT-59/
+// 62), never an edit.
+type UpdatePolicyRequest struct {
+	Environment *string `json:"environment,omitempty"`
+	Ref         *string `json:"ref,omitempty"`
+	Workflow    *string `json:"workflow,omitempty"`
 }
 
 // User This system's own local mirror of the signed-in WorkOS user.
@@ -922,6 +1036,9 @@ type InviteMemberJSONRequestBody InviteMemberJSONBody
 
 // ChangeMemberRoleJSONRequestBody defines body for ChangeMemberRole for application/json ContentType.
 type ChangeMemberRoleJSONRequestBody ChangeMemberRoleJSONBody
+
+// UpdatePolicyJSONRequestBody defines body for UpdatePolicy for application/json ContentType.
+type UpdatePolicyJSONRequestBody = UpdatePolicyRequest
 
 // AuthorizeRepositoryJSONRequestBody defines body for AuthorizeRepository for application/json ContentType.
 type AuthorizeRepositoryJSONRequestBody = RepositoryAuthorizeRequest
