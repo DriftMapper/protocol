@@ -7,6 +7,54 @@ import (
 	"time"
 )
 
+// Defines values for ChallengeStatus.
+const (
+	ChallengeStatusExpired  ChallengeStatus = "expired"
+	ChallengeStatusLive     ChallengeStatus = "live"
+	ChallengeStatusRedeemed ChallengeStatus = "redeemed"
+	ChallengeStatusRevoked  ChallengeStatus = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the ChallengeStatus enum.
+func (e ChallengeStatus) Valid() bool {
+	switch e {
+	case ChallengeStatusExpired:
+		return true
+	case ChallengeStatusLive:
+		return true
+	case ChallengeStatusRedeemed:
+		return true
+	case ChallengeStatusRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ChallengeIssuedStatus.
+const (
+	ChallengeIssuedStatusExpired  ChallengeIssuedStatus = "expired"
+	ChallengeIssuedStatusLive     ChallengeIssuedStatus = "live"
+	ChallengeIssuedStatusRedeemed ChallengeIssuedStatus = "redeemed"
+	ChallengeIssuedStatusRevoked  ChallengeIssuedStatus = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the ChallengeIssuedStatus enum.
+func (e ChallengeIssuedStatus) Valid() bool {
+	switch e {
+	case ChallengeIssuedStatusExpired:
+		return true
+	case ChallengeIssuedStatusLive:
+		return true
+	case ChallengeIssuedStatusRedeemed:
+		return true
+	case ChallengeIssuedStatusRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DriftEventType.
 const (
 	BuildIdChanged           DriftEventType = "build_id_changed"
@@ -400,6 +448,83 @@ type BuildRegistration struct {
 type BuildResponse struct {
 	// Data The authenticated disclosure tier — full metadata (spec §2.7).
 	Data Build `json:"data"`
+}
+
+// Challenge defines model for Challenge.
+type Challenge struct {
+	// Attempts Failed redemption attempts against this challenge so far.
+	Attempts  int       `json:"attempts"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Id        int64     `json:"id"`
+
+	// MaxAttempts The cap `attempts` is counted against — past this, redemption
+	// rejects the challenge outright regardless of `status`/`expires_at`.
+	MaxAttempts int        `json:"max_attempts"`
+	RedeemedAt  *time.Time `json:"redeemed_at,omitempty"`
+
+	// Status Derived, not stored — see `model.Challenge.State()`. Does not
+	// reflect the attempt cap: a challenge that has hit `max_attempts`
+	// still reports `live` here until it also expires or is revoked
+	// (redemption itself is what enforces the cap; this field alone
+	// isn't sufficient to know whether a further redemption attempt
+	// would succeed).
+	Status ChallengeStatus `json:"status"`
+}
+
+// ChallengeStatus Derived, not stored — see `model.Challenge.State()`. Does not
+// reflect the attempt cap: a challenge that has hit `max_attempts`
+// still reports `live` here until it also expires or is revoked
+// (redemption itself is what enforces the cap; this field alone
+// isn't sufficient to know whether a further redemption attempt
+// would succeed).
+type ChallengeStatus string
+
+// ChallengeIssued defines model for ChallengeIssued.
+type ChallengeIssued struct {
+	// Attempts Failed redemption attempts against this challenge so far.
+	Attempts  int       `json:"attempts"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Id        int64     `json:"id"`
+
+	// MaxAttempts The cap `attempts` is counted against — past this, redemption
+	// rejects the challenge outright regardless of `status`/`expires_at`.
+	MaxAttempts int        `json:"max_attempts"`
+	RedeemedAt  *time.Time `json:"redeemed_at,omitempty"`
+
+	// Status Derived, not stored — see `model.Challenge.State()`. Does not
+	// reflect the attempt cap: a challenge that has hit `max_attempts`
+	// still reports `live` here until it also expires or is revoked
+	// (redemption itself is what enforces the cap; this field alone
+	// isn't sufficient to know whether a further redemption attempt
+	// would succeed).
+	Status ChallengeIssuedStatus `json:"status"`
+
+	// Value The raw, single-use challenge secret. Returned **only** by
+	// `createChallenge`, and only on that one response — never
+	// recoverable afterward, never present on `listChallenges`
+	// rows. Paste it into CI as `DRIFTMAPPER_CHALLENGE` before
+	// navigating away.
+	Value string `json:"value"`
+}
+
+// ChallengeIssuedStatus Derived, not stored — see `model.Challenge.State()`. Does not
+// reflect the attempt cap: a challenge that has hit `max_attempts`
+// still reports `live` here until it also expires or is revoked
+// (redemption itself is what enforces the cap; this field alone
+// isn't sufficient to know whether a further redemption attempt
+// would succeed).
+type ChallengeIssuedStatus string
+
+// ChallengeIssuedResponse defines model for ChallengeIssuedResponse.
+type ChallengeIssuedResponse struct {
+	Data ChallengeIssued `json:"data"`
+}
+
+// ChallengeListResponse defines model for ChallengeListResponse.
+type ChallengeListResponse struct {
+	Data []Challenge `json:"data"`
 }
 
 // ClaimMismatchDetails `error.details` shape when `error.code` is `claim_mismatch`: a signature-

@@ -802,6 +802,110 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/orgs/{slug}/challenges:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    post:
+      operationId: createChallenge
+      summary: Issue a single-use challenge for this organization
+      description: |
+        The first step of spec §4.5's onboarding flow: mints a cryptographically
+        random, single-use, ~1hr-lived challenge, scoped to this org only —
+        it asserts nothing about which repository. The human pastes the
+        returned `value` into CI as a `DRIFTMAPPER_CHALLENGE` secret; the
+        repository's own OIDC token later proves the rest at redemption
+        (`authorizeRepository`).
+
+        **`value` is returned exactly once, on this response only.** It is
+        stored server-side as a hash, never recoverable afterward —
+        `listChallenges` never includes it. Losing the value before it's
+        pasted into CI means issuing a new challenge, not recovering the old
+        one.
+
+        Admin+ only, same bar as inviting a member: issuing a challenge is a
+        setup action that can bind a new repository to this org.
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '201':
+          description: Challenge issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChallengeIssuedResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: |
+            `error.code: rate_limited` — too many challenges issued for this
+            account recently. Distinct from redemption's own rate limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    get:
+      operationId: listChallenges
+      summary: List this organization's challenges
+      description: |
+        Lifecycle visibility for challenges issued via `createChallenge` —
+        issued-at, expires-at, redemption/attempt state. **Never includes the
+        raw value**, issued or not; that's `createChallenge`'s one-time
+        response only. Member+, matching read access to every other
+        onboarding-adjacent list in this API.
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The organization's challenges, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChallengeListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/challenges/{id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      operationId: revokeChallenge
+      summary: Revoke an outstanding challenge before it's redeemed
+      description: |
+        A challenge pasted into a workflow and then thought better of needs a
+        kill switch that doesn't require waiting out the TTL. Admin+, same
+        bar as issuing one. An already-expired-but-unredeemed challenge can
+        still be revoked (harmless — it's already unusable). An
+        already-redeemed or already-revoked challenge cannot: there is
+        nothing left to change, and this reports the same `404` a
+        never-existed or another-org's id gets, so a guessed id can't be
+        used to probe which case applies.
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/orgs/{slug}/policies:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -1499,6 +1603,74 @@ components:
       required: [data]
       properties:
         data: { $ref: '#/components/schemas/RepositoryAuthorization' }
+
+    # --- Challenges (DRFT-61) ----------------------------------------------
+    #
+    # Never carries the raw secret value except on ChallengeIssued, and only
+    # there — createChallenge's response, once, per spec §4.5.
+    Challenge:
+      type: object
+      required: [id, status, attempts, max_attempts, expires_at, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [live, redeemed, revoked, expired]
+          description: |
+            Derived, not stored — see `model.Challenge.State()`. Does not
+            reflect the attempt cap: a challenge that has hit `max_attempts`
+            still reports `live` here until it also expires or is revoked
+            (redemption itself is what enforces the cap; this field alone
+            isn't sufficient to know whether a further redemption attempt
+            would succeed).
+        attempts:
+          type: integer
+          description: Failed redemption attempts against this challenge so far.
+        max_attempts:
+          type: integer
+          description: |
+            The cap `attempts` is counted against — past this, redemption
+            rejects the challenge outright regardless of `status`/`expires_at`.
+        redeemed_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ChallengeIssued:
+      allOf:
+        - $ref: '#/components/schemas/Challenge'
+        - type: object
+          required: [value]
+          properties:
+            value:
+              type: string
+              description: |
+                The raw, single-use challenge secret. Returned **only** by
+                `createChallenge`, and only on that one response — never
+                recoverable afterward, never present on `listChallenges`
+                rows. Paste it into CI as `DRIFTMAPPER_CHALLENGE` before
+                navigating away.
+
+    ChallengeIssuedResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/ChallengeIssued' }
+
+    ChallengeListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Challenge' }
 
     # --- Policy lifecycle (DRFT-63) ---------------------------------------
     #
