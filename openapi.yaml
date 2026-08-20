@@ -78,9 +78,9 @@ info:
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A).
 
-    A workload principal can never reach billing, membership, or trust-declaration
-    operations: a compromised CI workflow must not be able to cancel a subscription
-    or add an org member.
+    A workload principal can never reach billing or membership operations: a
+    compromised CI workflow must not be able to cancel a subscription or add an
+    org member.
 
     There is deliberately no third principal *yet*. A human-scoped CLI credential
     (device-code flow or similar) is not needed while the CLI only writes from CI,
@@ -118,15 +118,13 @@ tags:
     description: URLs polled for drift detection (spec §2.6).
   - name: drift-events
     description: Observed build-ID changes at monitored URLs.
-  - name: trust
-    description: OIDC trust declarations and repo linking (spec §4.5).
   - name: repos
-    description: Confirmed repos and plan-slot usage.
+    description: Confirmed repos.
   - name: orgs
     description: |
       Organization membership/switching for the signed-in user — which orgs they
       belong to and at what role. Distinct from `billing`, which covers a single
-      already-resolved org's plan and slot usage.
+      already-resolved org's plan.
   - name: billing
     description: Subscription and checkout.
 
@@ -275,10 +273,8 @@ paths:
         `commit_sha` alone is insufficient, since the same commit legitimately builds
         many times.
 
-        Requires the repository's trust declaration to be confirmed, or to be
-        confirmable by this token — see `POST /v1/orgs/{slug}/trust-declarations`.
-        The first valid token matching a provisional declaration confirms it and
-        consumes a plan slot (spec §4.5).
+        Requires the repository to already be authorized to an organization
+        (spec §4.5) — registration otherwise fails with `no_policy`.
 
         **This response is the CLI's only template input.** `build_instance_id` and
         `resolution_url` are both server-provided, and the CLI constructs no URLs and
@@ -315,11 +311,10 @@ paths:
           description: |
             Token is signature-valid but not authorized to register this build.
             Includes the claim-mismatch case, which names the specific mismatched
-            field rather than failing generically (spec §4.5), and the plan-limit
-            case, where confirming would exceed the org's slot allowance. Both are
-            reported via `error.code` (`claim_mismatch` / `plan_limit`) with the
-            corresponding fields under `error.details` — see `ClaimMismatchDetails`
-            / `PlanLimitDetails`.
+            field rather than failing generically (spec §4.5), reported via
+            `error.code: claim_mismatch` with the mismatched field under
+            `error.details` — see `ClaimMismatchDetails`. Also covers `no_policy`
+            (no organization has authorized this repository at all).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -356,11 +351,11 @@ paths:
       operationId: createMonitoredUrl
       summary: Register a URL for drift polling
       description: |
-        **Precondition (spec §2.6):** the repository's trust declaration must be
-        confirmed and it must have at least one registered build. Polling before a
-        build exists can only produce a spurious never-yet-succeeded notice, since
-        there is no prior build-instance ID to diff against. Violations return
-        `precondition_not_met`.
+        **Precondition (spec §2.6):** the repository must already be authorized to
+        an organization and it must have at least one registered build. Polling
+        before a build exists can only produce a spurious never-yet-succeeded
+        notice, since there is no prior build-instance ID to diff against.
+        Violations return `precondition_not_met`.
 
         The registered URL is fetched by an isolated worker with its own egress
         policy and restricted database role. Registering a URL that resolves to a
@@ -569,115 +564,6 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /v1/orgs/{slug}/trust-declarations:
-    parameters:
-      - $ref: '#/components/parameters/OrgSlug'
-    post:
-      operationId: createTrustDeclaration
-      summary: Declare an OIDC trust relationship for a repository
-      description: |
-        Human-only, admin+ role required — same as every other `/v1/orgs/{slug}/...`
-        route. A workload token can never reach this operation, since it is never
-        authenticated via `userSession` at all — that's what stops a compromised
-        workflow from granting itself access to new repositories.
-
-        **Org-scoped by URL, not by a flat top-level path.** This deviates from an
-        earlier draft of this document, which had `POST /v1/trust-declarations` with
-        org resolved from an implicit "current session org." Every other org-scoped
-        dashboard resource in this API resolves its org from the URL's `{slug}`, and
-        this operation is no exception — corrected to match (`x-stability: dashboard`,
-        so this was free to change; nothing was ever pinned to the old shape).
-
-        The declaration is **provisional**: it grants nothing, consumes no plan slot,
-        and can be created by any admin/owner. It is confirmed by the first signature-
-        valid token whose claims match it, which is what proves control of the
-        repository (spec §4.5). Because a squatter can never produce such a token,
-        multiple orgs may safely hold provisional declarations for the same
-        repository; the first confirmed wins and the others are invalidated.
-
-        Unconfirmed declarations expire (`expires_at`, derived — never a stored
-        lifecycle column; see `status`).
-
-        `provider`/`workflow`/`ref`/`environment` are the claim-mapping fields the
-        confirming token is matched against (spec §4.3); `ref`/`environment` are
-        optional wildcards when omitted. `workflow` is matched against the bare
-        filename, not a raw `workflow_ref` claim — the server normalizes GitHub's
-        `owner/repo/.github/workflows/ci.yml@refs/heads/main` shape down to `ci.yml`
-        before comparing.
-      tags: [trust]
-      x-stability: dashboard
-      security:
-        - userSession: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CreateTrustDeclarationRequest' }
-      responses:
-        '201':
-          description: Provisional declaration created.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TrustDeclarationResponse' }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '422':
-          $ref: '#/components/responses/UnprocessableEntity'
-    get:
-      operationId: listTrustDeclarations
-      summary: List this organization's trust declarations
-      description: |
-        Returns every declaration the org holds, any lifecycle state, newest first.
-        Not yet paginated — `data` is the full list, with no `page` envelope. Kept as
-        a placeholder-free plain list rather than documenting `page`/`cursor` fields
-        the server doesn't populate.
-      tags: [trust]
-      x-stability: dashboard
-      security:
-        - userSession: []
-      responses:
-        '200':
-          description: This organization's trust declarations.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TrustDeclarationListResponse' }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-
-  /v1/orgs/{slug}/trust-declarations/{id}:
-    parameters:
-      - $ref: '#/components/parameters/OrgSlug'
-      - name: id
-        in: path
-        required: true
-        schema: { type: integer, format: int64 }
-    delete:
-      operationId: deleteTrustDeclaration
-      summary: Revoke a trust declaration
-      description: |
-        Admin+ role required. Revoking a confirmed declaration unlinks the repository
-        and frees its plan slot. Subsequent builds from that repository are rejected.
-        Existing build records and drift history are retained — nothing else in the
-        schema references a trust declaration by foreign key, so nothing else is
-        touched by the delete.
-      tags: [trust]
-      x-stability: dashboard
-      security:
-        - userSession: []
-      responses:
-        '204':
-          description: Revoked.
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
   /v1/orgs/{slug}/builds:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -686,14 +572,11 @@ paths:
       summary: List builds for one organization
       description: |
         Org-scoped by URL, same convention as every other dashboard-tier list in this
-        API (spec-internal note: originally drafted flat as `/v1/builds` with an
-        implicit "current org," corrected for the same reason
-        `createTrustDeclaration` was — there is no session-tracked "current org" a
-        flat path could resolve against, and a user may belong to more than one).
-        Unrelated to `POST /v1/builds` (`registerBuild`), which stays flat: a
-        workload OIDC token has no org/slug context at registration time, and the
-        server resolves the owning org from the confirming trust declaration
-        instead.
+        API — there is no session-tracked "current org" a flat path could resolve
+        against, and a user may belong to more than one. Unrelated to
+        `POST /v1/builds` (`registerBuild`), which stays flat: a workload OIDC token
+        has no org/slug context at registration time, and the server resolves the
+        owning org from the repository's authorization instead.
       tags: [builds]
       x-stability: dashboard
       security:
@@ -761,7 +644,7 @@ paths:
       - $ref: '#/components/parameters/OrgSlug'
     get:
       operationId: getOrganization
-      summary: One organization's plan and slot usage
+      summary: One organization's plan
       tags: [billing]
       x-stability: dashboard
       security:
@@ -913,7 +796,7 @@ components:
     Forbidden:
       description: |
         Authenticated, but not permitted to perform this action — e.g. a member
-        role attempting an admin+-only trust-declaration mutation.
+        role attempting an admin+-only mutation.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1265,88 +1148,6 @@ components:
               items: { $ref: '#/components/schemas/DriftEvent' }
             page: { $ref: '#/components/schemas/PageInfo' }
 
-    TrustDeclarationStatus:
-      type: string
-      description: |
-        - `provisional` — created, unconfirmed, grants nothing, consumes no slot.
-        - `confirmed` — a matching valid token was received; repository is linked and
-          a plan slot is consumed.
-        - `invalidated` — another organization confirmed this repository first.
-        - `expired` — never confirmed within the expiry window.
-      enum: [provisional, confirmed, invalidated, expired]
-
-    CreateTrustDeclarationRequest:
-      type: object
-      required: [provider, repository, workflow]
-      properties:
-        provider: { $ref: '#/components/schemas/Provider' }
-        repository:
-          type: string
-          description: '`owner/name`. Unverified until confirmation.'
-        workflow:
-          type: string
-          description: |
-            Filename including extension (e.g. `ci.yml`), matched against the bare
-            filename extracted from a `workflow_ref`-shaped claim — never the raw
-            claim value. Required: an empty/omitted `workflow` would otherwise match
-            any workflow in the repository, which is not this operation's default.
-        ref:
-          type: string
-          description: Optional. Omitted/empty matches any ref.
-        environment:
-          type: string
-          description: Optional. Omitted/empty matches any environment.
-
-    TrustDeclaration:
-      type: object
-      required: [id, provider, repository, workflow, status, expires_at, created_at]
-      properties:
-        id:
-          type: integer
-          format: int64
-        provider: { $ref: '#/components/schemas/Provider' }
-        repository:
-          type: string
-          description: '`owner/name`, as declared. Unverified until confirmation.'
-        workflow: { type: string }
-        ref:
-          type: string
-          description: Absent means "any ref accepted."
-        environment:
-          type: string
-          description: Absent means "any environment accepted."
-        status: { $ref: '#/components/schemas/TrustDeclarationStatus' }
-        repository_id:
-          type: integer
-          format: int64
-          description: |
-            Populated on confirmation. This is Driftmapper's internal repository id
-            (`repositories.id`), NOT the provider's stable repository id returned as
-            `Repository.repository_id` / `Build.repository_id` elsewhere in this API
-            — those two identifier spaces are not directly comparable today. Worth
-            resolving before a client tries to correlate a confirmed declaration with
-            its `/v1/repos` entry.
-        confirmed_at: { type: string, format: date-time }
-        expires_at:
-          type: string
-          format: date-time
-          description: Applies while `provisional`.
-        created_at: { type: string, format: date-time }
-
-    TrustDeclarationResponse:
-      type: object
-      required: [data]
-      properties:
-        data: { $ref: '#/components/schemas/TrustDeclaration' }
-
-    TrustDeclarationListResponse:
-      type: object
-      required: [data]
-      properties:
-        data:
-          type: array
-          items: { $ref: '#/components/schemas/TrustDeclaration' }
-
     Repository:
       type: object
       required: [repository_id, provider, path, visibility, linked_at]
@@ -1355,11 +1156,6 @@ components:
         provider: { $ref: '#/components/schemas/Provider' }
         path: { type: string, description: '`owner/name` at time of last build.' }
         visibility: { $ref: '#/components/schemas/Visibility' }
-        consumes_plan_slot:
-          type: boolean
-          description: |
-            False for public repositories on the Free tier, which are unmetered
-            (spec §6A).
         latest_build_instance_id: { type: string }
         linked_at: { type: string, format: date-time }
 
@@ -1430,22 +1226,11 @@ components:
 
     Organization:
       type: object
-      required: [organization_id, name, plan, slots_used]
+      required: [organization_id, name, plan]
       properties:
         organization_id: { type: string }
         name: { type: string }
         plan: { $ref: '#/components/schemas/Plan' }
-        slots_used:
-          type: integer
-          description: Private repositories consuming a plan slot.
-        slots_included:
-          type: integer
-          description: |
-            Null whenever no slot limit is configured for the org's plan — always
-            true for Enterprise (not gated on repository count), and also true for
-            every plan today: slot-limit enforcement (spec §6A) has not shipped yet,
-            so this field is unconditionally absent until it does. Clients must not
-            infer a numeric default from its absence.
         sso_enforced: { type: boolean }
 
     OrganizationResponse:
@@ -1477,7 +1262,7 @@ components:
             Stable, machine-readable identity of the error. Clients branch on this,
             never on `message`, which may be reworded without a version bump.
             Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-            `unknown_field`, `claim_mismatch`, `no_trust_declaration`.
+            `unknown_field`, `claim_mismatch`, `no_policy`.
         message:
           type: string
           description: Human-readable, safe to display directly.
@@ -1486,8 +1271,7 @@ components:
           description: |
             Structured, error-specific fields a client can act on programmatically.
             Present only for errors that have them (currently `claim_mismatch` —
-            see `ClaimMismatchDetails` — and, once slot enforcement lands,
-            `plan_limit` — see `PlanLimitDetails`); absent otherwise.
+            see `ClaimMismatchDetails`); absent otherwise.
           additionalProperties: true
 
     ErrorEnvelope:
@@ -1500,7 +1284,8 @@ components:
       type: object
       description: |
         `error.details` shape when `error.code` is `claim_mismatch`: a signature-
-        valid token whose claims did not match any trust declaration.
+        valid token whose claims did not satisfy the repository's authorization
+        policy.
 
         The mismatched field is named explicitly rather than returning a generic
         authentication failure. This is the single most likely point of first-run
@@ -1512,26 +1297,12 @@ components:
       properties:
         mismatched_claim:
           type: string
-          description: e.g. `workflow`, `repository`, `ref`, `environment`.
+          description: e.g. `workflow`, `ref`, `environment`.
         expected:
           type: string
-          description: Value from the trust declaration.
+          description: Value the policy requires.
         actual:
           type: string
           description: |
             Value from the verified token. Safe to echo: the caller demonstrably
             already holds this token.
-
-    PlanLimitDetails:
-      type: object
-      description: |
-        `error.details` shape when `error.code` is `plan_limit`: confirming this
-        repository would exceed the plan's slot allowance. Returned at confirmation
-        time rather than declaration time, so an unconfirmed declaration never
-        consumes a slot (spec §4.5). Not yet emitted by the server — plan-slot
-        enforcement lands in DRFT-22 — documented here as the shape it will use.
-      required: [slots_used, slots_included]
-      properties:
-        slots_used: { type: integer }
-        slots_included: { type: integer }
-        upgrade_url: { type: string, format: uri }
