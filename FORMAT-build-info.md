@@ -9,10 +9,14 @@ build's identity, today or years from now — so it gets the same documented,
 versioned treatment.
 
 Reference implementation: `driftmapper/cli`'s `internal/buildinfo` package
-(`Generate` writes this shape, `Parse` is the read-side counterpart used by
-`driftmapper compare`). This document is the contract; that package is one
-conforming producer/consumer of it, not the source of truth for what a
-*third-party* parser (the Phase 2 pinger included) is allowed to assume.
+(`Generate` writes this shape). There is no first-party parser as of CLI
+v1.x — `driftmapper compare` (DRFT-50) hands off to the dashboard SPA for
+an authenticated diff instead of parsing this file locally, so a *third
+party's* own tooling (synthetic monitoring, uptime checks — see this org's
+"feed existing tools instead of building a monitoring platform" decision)
+is this format's primary audience. This document is the contract;
+`internal/buildinfo` is one conforming producer of it, not the source of
+truth for what a third-party parser is allowed to assume.
 
 ## Contract vs. presentation
 
@@ -21,11 +25,12 @@ The file has two independent layers. Only the first is the contract:
 1. **Machine-readable — namespaced, versioned meta tags.** This is what a
    parser reads. Stable across CLI versions, evolved only per the
    compatibility rules below.
-2. **Human-facing — auto-redirect with progressive enhancement.** An inline
-   script and a `<noscript>` fallback link, both pointed at the build's
-   resolution URL. Free to change shape (copy, styling, redirect
-   mechanism) without a version bump — a parser must never depend on
-   anything in this layer.
+2. **Human-facing — visible content plus a click-only sign-in link.** The
+   build ID and built-at timestamp rendered as ordinary page text (DRFT-52
+   — no request required to see them), and a link (plus `<noscript>`
+   fallback) to sign in for the full authenticated record. No auto-redirect
+   on page load. Free to change shape (copy, styling, link target) without
+   a version bump — a parser must never depend on anything in this layer.
 
 All representations in the file are written from one build-instance
 ID/resolution-URL pair in a single generation step, so they can never
@@ -36,6 +41,7 @@ disagree with each other.
 ```html
 <meta name="driftmapper:schema-version" content="1">
 <meta name="driftmapper:build-id" content="<build-instance-id>">
+<meta name="driftmapper:built-at" content="<built-at>">
 <meta name="driftmapper:resolution-url" content="<resolution-url>">
 ```
 
@@ -43,6 +49,7 @@ disagree with each other.
 |---|---|---|
 | `driftmapper:schema-version` | Yes | See "Schema version semantics" below. |
 | `driftmapper:build-id` | Yes | Opaque, server-issued. Content-addressed over `repository_id + commit_sha + ref + workflow + run_id + run_attempt` server-side — **treat this as opaque and do not parse it**; the derivation is an implementation detail that may change without a schema-version bump. |
+| `driftmapper:built-at` | Yes | RFC 3339 timestamp of build registration. Added additively (no schema-version bump) alongside DRFT-52's visible unauth-tier content — matches the resolution page's own `driftmapper:built-at` tag (spec §2.7) exactly, so a parser sees the same value whichever surface it reads. |
 | `driftmapper:resolution-url` | Yes | The build's resolution page. Server-provided; the CLI constructs no URL of its own. |
 
 A tag not listed here may appear in a future schema version. A parser built
@@ -52,9 +59,11 @@ file for their presence — see below.
 ## Schema version semantics
 
 `driftmapper:schema-version` exists because this file is a public contract
-consumed by parsers (the Phase 2 pinger, and any third-party tooling) built
-against CLI versions that may be years old by the time they read a given
-file, and there's no other unambiguous way to evolve the format later.
+consumed by third-party parsers (synthetic monitoring, uptime tooling — see
+"Reference implementation" above; the scheduled pinger that originally
+motivated this was cancelled, DRFT-27) built against CLI versions that may
+be years old by the time they read a given file, and there's no other
+unambiguous way to evolve the format later.
 
 - **A new tag is additive, not a version bump.** Parsers must tolerate
   unknown `driftmapper:*` tags. This is the same "clients tolerate unknown
