@@ -802,6 +802,92 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/orgs/{slug}/policies:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    get:
+      operationId: listPolicies
+      summary: List an organization's live trusted-workload policies
+      description: |
+        Lifecycle management for policies created by challenge redemption
+        (`authorizeRepository`) — DRFT-63. A revoked policy drops off this
+        list; build history remains available via `listBuilds` regardless
+        (`builds.org_id` is never rewritten by revocation).
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The organization's live policies, newest binding first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/policies/{id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    patch:
+      operationId: updatePolicy
+      summary: Narrow or widen a live policy's constraints
+      description: |
+        Full-replace on `workflow`/`ref`/`environment` — the only fields
+        ever mutable after binding. `repository_id`, `issuer`, and `org_id`
+        are absent from the request schema by construction: re-pointing a
+        policy at a different repository or org is a new challenge, never
+        an edit (spec §4.5).
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdatePolicyRequest' }
+      responses:
+        '204':
+          description: Policy updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: revokePolicy
+      summary: Revoke a live policy
+      description: |
+        Quiet and consequential (spec §4.5, DRFT-63): stops future build
+        registration under this org, frees the repository to be re-bound by
+        any org via a fresh challenge, and does not touch historical
+        attribution — `builds.org_id` is never retroactively rewritten.
+      tags: [repos]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Policy revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/orgs/{slug}/members:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -1398,8 +1484,9 @@ components:
       type: object
       description: |
         Confirmation that a challenge was redeemed and the repository is now
-        bound — not a full policy record (constraints, timestamps; see the
-        dashboard-tier policy-management operations).
+        bound — not a full policy record (constraints, timestamps; see
+        `Policy`/`listPolicies`, the dashboard-tier policy-management
+        operations, DRFT-63).
       required: [repository_id, organization_id]
       properties:
         repository_id:
@@ -1412,6 +1499,71 @@ components:
       required: [data]
       properties:
         data: { $ref: '#/components/schemas/RepositoryAuthorization' }
+
+    # --- Policy lifecycle (DRFT-63) ---------------------------------------
+    #
+    # A policy's own fields carry no repository/org identity: those are
+    # immutable by construction (see UpdatePolicyRequest) and already known
+    # to a caller acting on one row from PolicyListResponse.
+    Policy:
+      type: object
+      required: [id, state, bound_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        workflow:
+          type: string
+          description: |
+            Bare workflow-filename constraint (e.g. `ci.yml`). Null means
+            unconstrained — redemption's default policy leaves it unset.
+        ref:
+          type: string
+          description: Git ref constraint (e.g. `refs/heads/main`). Null means unconstrained.
+        environment:
+          type: string
+          description: |
+            Deployment-environment constraint. Null means unconstrained; an
+            empty string is a real constraint meaning "must target no
+            environment" (spec §4.5).
+        state:
+          type: string
+          enum: [live, revoked]
+        bound_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+
+    PolicyWithRepository:
+      allOf:
+        - $ref: '#/components/schemas/Policy'
+        - type: object
+          required: [repository_id, repository_path, provider]
+          properties:
+            repository_id: { type: string }
+            repository_path: { type: string, description: '`owner/name` at time of binding.' }
+            provider: { $ref: '#/components/schemas/Provider' }
+
+    PolicyListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/PolicyWithRepository' }
+
+    UpdatePolicyRequest:
+      type: object
+      description: |
+        Full-replace on the three constrainable dimensions: omit a property
+        or send it null to leave/set that dimension unconstrained, resubmit
+        the current value for anything you're not changing. No
+        `repository_id`/`issuer`/`org_id` property exists here — rebinding a
+        policy to a different repository or org is a new challenge (DRFT-59/
+        62), never an edit.
+      additionalProperties: false
+      properties:
+        workflow: { type: string }
+        ref: { type: string }
+        environment: { type: string }
 
     MonitoredUrl:
       type: object
