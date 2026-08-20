@@ -561,6 +561,34 @@ type Repository struct {
 	Visibility Visibility `json:"visibility"`
 }
 
+// RepositoryAuthorization Confirmation that a challenge was redeemed and the repository is now
+// bound — not a full policy record (constraints, timestamps; see the
+// dashboard-tier policy-management operations).
+type RepositoryAuthorization struct {
+	OrganizationId string `json:"organization_id"`
+
+	// RepositoryId Provider's stable repository identifier, same identity space as `Build.repository_id`.
+	RepositoryId string `json:"repository_id"`
+}
+
+// RepositoryAuthorizationResponse defines model for RepositoryAuthorizationResponse.
+type RepositoryAuthorizationResponse struct {
+	// Data Confirmation that a challenge was redeemed and the repository is now
+	// bound — not a full policy record (constraints, timestamps; see the
+	// dashboard-tier policy-management operations).
+	Data RepositoryAuthorization `json:"data"`
+}
+
+// RepositoryAuthorizeRequest Repository identity is never accepted here — it comes only from the
+// verified workload OIDC token (spec §4.5), same rule as
+// `BuildRegistration`'s token-derived fields.
+type RepositoryAuthorizeRequest struct {
+	// Challenge The single-use value issued by `POST /v1/orgs/{slug}/challenges`.
+	// Bearer secret — never logged, never written to disk by a
+	// conforming client.
+	Challenge string `json:"challenge"`
+}
+
 // RepositoryListResponse defines model for RepositoryListResponse.
 type RepositoryListResponse struct {
 	Data struct {
@@ -725,3 +753,6 @@ type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
 
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody CreateOrgJSONBody
+
+// AuthorizeRepositoryJSONRequestBody defines body for AuthorizeRepository for application/json ContentType.
+type AuthorizeRepositoryJSONRequestBody = RepositoryAuthorizeRequest
