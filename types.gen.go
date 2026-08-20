@@ -132,14 +132,20 @@ func (e Visibility) Valid() bool {
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
+	// Bound Whether this persisted build belongs to a currently bound repository.
+	Bound bool `json:"bound"`
+
 	// BuildInstanceId Opaque and server-issued. Content-addressed over the tuple documented on
 	// `registerBuild`. Clients MUST treat this as opaque and MUST NOT parse it —
 	// the derivation is an implementation detail that may change.
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
-	CommitAuthor    *string   `json:"commit_author,omitempty"`
-	CommitCommitter *string   `json:"commit_committer,omitempty"`
-	CommitSha       string    `json:"commit_sha"`
+
+	// ClaimUrl Signup URL included only when `bound` is false.
+	ClaimUrl        *string `json:"claim_url,omitempty"`
+	CommitAuthor    *string `json:"commit_author,omitempty"`
+	CommitCommitter *string `json:"commit_committer,omitempty"`
+	CommitSha       string  `json:"commit_sha"`
 
 	// Metadata Free-form organization-defined fields (owning team, ticket reference,
 	// environment label). Flat string-to-string by design (spec §2.2a): nesting
@@ -362,7 +368,7 @@ type Error struct {
 	// Code Stable, machine-readable identity of the error. Clients branch on this,
 	// never on `message`, which may be reworded without a version bump.
 	// Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-	// `unknown_field`, `claim_mismatch`, `no_policy`.
+	// `unknown_field`, `claim_mismatch`, `policy_revoked`.
 	Code string `json:"code"`
 
 	// Details Structured, error-specific fields a client can act on programmatically.

@@ -281,8 +281,9 @@ paths:
         `commit_sha` alone is insufficient, since the same commit legitimately builds
         many times.
 
-        Requires the repository to already be authorized to an organization
-        (spec §4.5) — registration otherwise fails with `no_policy`.
+        Registration accepts a verified workload token before repository binding.
+        The response reports whether the build is bound and, for unbound builds,
+        includes a signup URL so the CLI can surface the onboarding path.
 
         **This response is the CLI's only template input.** `build_instance_id` and
         `resolution_url` are both server-provided, and the CLI constructs no URLs and
@@ -321,8 +322,8 @@ paths:
             Includes the claim-mismatch case, which names the specific mismatched
             field rather than failing generically (spec §4.5), reported via
             `error.code: claim_mismatch` with the mismatched field under
-            `error.details` — see `ClaimMismatchDetails`. Also covers `no_policy`
-            (no organization has authorized this repository at all).
+            `error.details` — see `ClaimMismatchDetails`. A previously bound
+            repository whose policy was revoked reports `error.code: policy_revoked`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1085,6 +1086,7 @@ components:
         - workflow
         - built_at
         - registered_at
+        - bound
       properties:
         build_instance_id:
           type: string
@@ -1126,6 +1128,13 @@ components:
             Canonical resolution page for this build — the URL written into
             `build-info.html`. Server-provided so the CLI never constructs it and
             cannot drift from server routing.
+        bound:
+          type: boolean
+          description: Whether this persisted build belongs to a currently bound repository.
+        claim_url:
+          type: string
+          format: uri
+          description: Signup URL included only when `bound` is false.
         metadata: { $ref: '#/components/schemas/BuildMetadata' }
 
     BuildResponse:
@@ -1388,7 +1397,7 @@ components:
             Stable, machine-readable identity of the error. Clients branch on this,
             never on `message`, which may be reworded without a version bump.
             Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-            `unknown_field`, `claim_mismatch`, `no_policy`.
+            `unknown_field`, `claim_mismatch`, `policy_revoked`.
         message:
           type: string
           description: Human-readable, safe to display directly.
