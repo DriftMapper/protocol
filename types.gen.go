@@ -109,30 +109,6 @@ func (e Provider) Valid() bool {
 	}
 }
 
-// Defines values for TrustDeclarationStatus.
-const (
-	Confirmed   TrustDeclarationStatus = "confirmed"
-	Expired     TrustDeclarationStatus = "expired"
-	Invalidated TrustDeclarationStatus = "invalidated"
-	Provisional TrustDeclarationStatus = "provisional"
-)
-
-// Valid indicates whether the value is a known member of the TrustDeclarationStatus enum.
-func (e TrustDeclarationStatus) Valid() bool {
-	switch e {
-	case Confirmed:
-		return true
-	case Expired:
-		return true
-	case Invalidated:
-		return true
-	case Provisional:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for Visibility.
 const (
 	Internal Visibility = "internal"
@@ -304,7 +280,8 @@ type BuildResponse struct {
 }
 
 // ClaimMismatchDetails `error.details` shape when `error.code` is `claim_mismatch`: a signature-
-// valid token whose claims did not match any trust declaration.
+// valid token whose claims did not satisfy the repository's authorization
+// policy.
 //
 // The mismatched field is named explicitly rather than returning a generic
 // authentication failure. This is the single most likely point of first-run
@@ -317,38 +294,11 @@ type ClaimMismatchDetails struct {
 	// already holds this token.
 	Actual string `json:"actual"`
 
-	// Expected Value from the trust declaration.
+	// Expected Value the policy requires.
 	Expected string `json:"expected"`
 
-	// MismatchedClaim e.g. `workflow`, `repository`, `ref`, `environment`.
+	// MismatchedClaim e.g. `workflow`, `ref`, `environment`.
 	MismatchedClaim string `json:"mismatched_claim"`
-}
-
-// CreateTrustDeclarationRequest defines model for CreateTrustDeclarationRequest.
-type CreateTrustDeclarationRequest struct {
-	// Environment Optional. Omitted/empty matches any environment.
-	Environment *string `json:"environment,omitempty"`
-
-	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
-	// additive registry entries and appear here as new enum members (spec §4.4).
-	// Clients MUST tolerate unknown values in responses.
-	//
-	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
-	// server-side), not a literal "GitHub Actions" spelling — matches what every
-	// `provider`/`claims.Issuer` value on the wire actually contains.
-	Provider Provider `json:"provider"`
-
-	// Ref Optional. Omitted/empty matches any ref.
-	Ref *string `json:"ref,omitempty"`
-
-	// Repository `owner/name`. Unverified until confirmation.
-	Repository string `json:"repository"`
-
-	// Workflow Filename including extension (e.g. `ci.yml`), matched against the bare
-	// filename extracted from a `workflow_ref`-shaped claim — never the raw
-	// claim value. Required: an empty/omitted `workflow` would otherwise match
-	// any workflow in the repository, which is not this operation's default.
-	Workflow string `json:"workflow"`
 }
 
 // DriftEvent defines model for DriftEvent.
@@ -412,13 +362,12 @@ type Error struct {
 	// Code Stable, machine-readable identity of the error. Clients branch on this,
 	// never on `message`, which may be reworded without a version bump.
 	// Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-	// `unknown_field`, `claim_mismatch`, `no_trust_declaration`.
+	// `unknown_field`, `claim_mismatch`, `no_policy`.
 	Code string `json:"code"`
 
 	// Details Structured, error-specific fields a client can act on programmatically.
 	// Present only for errors that have them (currently `claim_mismatch` —
-	// see `ClaimMismatchDetails` — and, once slot enforcement lands,
-	// `plan_limit` — see `PlanLimitDetails`); absent otherwise.
+	// see `ClaimMismatchDetails`); absent otherwise.
 	Details *map[string]interface{} `json:"details,omitempty"`
 
 	// Message Human-readable, safe to display directly.
@@ -560,17 +509,7 @@ type Organization struct {
 	Name           string `json:"name"`
 	OrganizationId string `json:"organization_id"`
 	Plan           Plan   `json:"plan"`
-
-	// SlotsIncluded Null whenever no slot limit is configured for the org's plan — always
-	// true for Enterprise (not gated on repository count), and also true for
-	// every plan today: slot-limit enforcement (spec §6A) has not shipped yet,
-	// so this field is unconditionally absent until it does. Clients must not
-	// infer a numeric default from its absence.
-	SlotsIncluded *int `json:"slots_included,omitempty"`
-
-	// SlotsUsed Private repositories consuming a plan slot.
-	SlotsUsed   int   `json:"slots_used"`
-	SsoEnforced *bool `json:"sso_enforced,omitempty"`
+	SsoEnforced    *bool  `json:"sso_enforced,omitempty"`
 }
 
 // OrganizationResponse defines model for OrganizationResponse.
@@ -589,17 +528,6 @@ type PageInfo struct {
 // Plan defines model for Plan.
 type Plan string
 
-// PlanLimitDetails `error.details` shape when `error.code` is `plan_limit`: confirming this
-// repository would exceed the plan's slot allowance. Returned at confirmation
-// time rather than declaration time, so an unconfirmed declaration never
-// consumes a slot (spec §4.5). Not yet emitted by the server — plan-slot
-// enforcement lands in DRFT-22 — documented here as the shape it will use.
-type PlanLimitDetails struct {
-	SlotsIncluded int     `json:"slots_included"`
-	SlotsUsed     int     `json:"slots_used"`
-	UpgradeUrl    *string `json:"upgrade_url,omitempty"`
-}
-
 // Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 // additive registry entries and appear here as new enum members (spec §4.4).
 // Clients MUST tolerate unknown values in responses.
@@ -611,9 +539,6 @@ type Provider string
 
 // Repository defines model for Repository.
 type Repository struct {
-	// ConsumesPlanSlot False for public repositories on the Free tier, which are unmetered
-	// (spec §6A).
-	ConsumesPlanSlot      *bool     `json:"consumes_plan_slot,omitempty"`
 	LatestBuildInstanceId *string   `json:"latest_build_instance_id,omitempty"`
 	LinkedAt              time.Time `json:"linked_at"`
 
@@ -643,67 +568,6 @@ type RepositoryListResponse struct {
 		Page  PageInfo     `json:"page"`
 	} `json:"data"`
 }
-
-// TrustDeclaration defines model for TrustDeclaration.
-type TrustDeclaration struct {
-	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-
-	// Environment Absent means "any environment accepted."
-	Environment *string `json:"environment,omitempty"`
-
-	// ExpiresAt Applies while `provisional`.
-	ExpiresAt time.Time `json:"expires_at"`
-	Id        int64     `json:"id"`
-
-	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
-	// additive registry entries and appear here as new enum members (spec §4.4).
-	// Clients MUST tolerate unknown values in responses.
-	//
-	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
-	// server-side), not a literal "GitHub Actions" spelling — matches what every
-	// `provider`/`claims.Issuer` value on the wire actually contains.
-	Provider Provider `json:"provider"`
-
-	// Ref Absent means "any ref accepted."
-	Ref *string `json:"ref,omitempty"`
-
-	// Repository `owner/name`, as declared. Unverified until confirmation.
-	Repository string `json:"repository"`
-
-	// RepositoryId Populated on confirmation. This is Driftmapper's internal repository id
-	// (`repositories.id`), NOT the provider's stable repository id returned as
-	// `Repository.repository_id` / `Build.repository_id` elsewhere in this API
-	// — those two identifier spaces are not directly comparable today. Worth
-	// resolving before a client tries to correlate a confirmed declaration with
-	// its `/v1/repos` entry.
-	RepositoryId *int64 `json:"repository_id,omitempty"`
-
-	// Status - `provisional` — created, unconfirmed, grants nothing, consumes no slot.
-	// - `confirmed` — a matching valid token was received; repository is linked and
-	//   a plan slot is consumed.
-	// - `invalidated` — another organization confirmed this repository first.
-	// - `expired` — never confirmed within the expiry window.
-	Status   TrustDeclarationStatus `json:"status"`
-	Workflow string                 `json:"workflow"`
-}
-
-// TrustDeclarationListResponse defines model for TrustDeclarationListResponse.
-type TrustDeclarationListResponse struct {
-	Data []TrustDeclaration `json:"data"`
-}
-
-// TrustDeclarationResponse defines model for TrustDeclarationResponse.
-type TrustDeclarationResponse struct {
-	Data TrustDeclaration `json:"data"`
-}
-
-// TrustDeclarationStatus - `provisional` — created, unconfirmed, grants nothing, consumes no slot.
-//   - `confirmed` — a matching valid token was received; repository is linked and
-//     a plan slot is consumed.
-//   - `invalidated` — another organization confirmed this repository first.
-//   - `expired` — never confirmed within the expiry window.
-type TrustDeclarationStatus string
 
 // User This system's own local mirror of the signed-in WorkOS user.
 type User struct {
@@ -861,6 +725,3 @@ type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
 
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody CreateOrgJSONBody
-
-// CreateTrustDeclarationJSONRequestBody defines body for CreateTrustDeclaration for application/json ContentType.
-type CreateTrustDeclarationJSONRequestBody = CreateTrustDeclarationRequest
