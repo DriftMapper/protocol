@@ -23,10 +23,16 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **In the MVP the public tier is exactly one operation: `registerBuild`.** The CLI
-    is a CI-pipeline tool first — it writes a build and generates an HTML file from
-    the response, and it reads nothing. Every other operation is therefore
-    `dashboard` for now.
+    **The public tier is two operations: `registerBuild` and
+    `authorizeRepository`.** The CLI is a CI-pipeline tool first — it writes a
+    build and generates an HTML file from the response, and it reads nothing.
+    `authorizeRepository` is the one deliberate exception (spec §4.5): redeeming
+    a challenge to bind a repository is itself a write (a policy is created),
+    called from the same customer CI the CLI already runs in, with the same
+    permanent version-skew exposure as build registration. Promoting an
+    operation from `dashboard` to `public` is additive and safe, as noted
+    below — this was the first promotion since the tier was defined, and
+    every operation besides these two is still `dashboard`.
 
     This is deliberately conservative rather than a judgement that these operations
     will never be CLI-facing; a fully featured CLI is an intended later iteration.
@@ -119,7 +125,9 @@ tags:
   - name: drift-events
     description: Observed build-ID changes at monitored URLs.
   - name: repos
-    description: Confirmed repos.
+    description: |
+      Repository authorization — binding a repository to an org via
+      challenge redemption (spec §4.5), and listing already-bound repos.
   - name: orgs
     description: |
       Organization membership/switching for the signed-in user — which orgs they
@@ -345,6 +353,89 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /v1/repositories/authorize:
+    post:
+      operationId: authorizeRepository
+      summary: Redeem a challenge to bind a repository to an organization
+      description: |
+        Called by the CLI during CI, immediately before (or as part of)
+        `registerBuild` — see `driftmapper/cli`'s `register` command.
+        Authenticated with a workload OIDC token only, exactly like
+        `registerBuild`: a human session can never bind a repository by
+        itself, only a real CI token can (spec §4.5).
+
+        In one atomic transaction: verifies the token, looks up the challenge
+        by its presented value, resolves the issuing org, checks that org's
+        plan slot, creates a trusted-workload policy from the **token's**
+        claims (never the request body), and burns the challenge. All of it
+        commits or none does — there is no window in which a challenge is
+        consumed without a resulting policy, or vice versa.
+
+        **Repository identity comes only from the verified token.** The
+        request carries nothing but the challenge value itself.
+
+        **Error responses never let a caller distinguish "this challenge
+        value never existed" from "it existed but is no longer usable"**
+        (expired, revoked, already redeemed, or over its attempt cap) — all
+        of those collapse to the same `invalid_challenge` `403`. A caller
+        that redeems the same already-consumed challenge again — e.g. a
+        repo secret left in place after a successful first bind — gets this
+        identical response; it cannot be distinguished from a value that was
+        never valid. See `driftmapper/cli`'s docs for the operational
+        implication (the CLI logs a one-time reminder to remove the secret
+        on first successful redemption, rather than relying on repeat calls
+        being silently safe).
+      tags: [repos]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepositoryAuthorizeRequest'
+      responses:
+        '201':
+          description: Challenge redeemed; repository now bound to the org.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RepositoryAuthorizationResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          description: |
+            The issuing org's plan slot is exhausted. `error.code:
+            upgrade_required` — actionable, names the limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: |
+            `error.code: invalid_challenge` — the challenge is unusable, for
+            any of the reasons described above, deliberately indistinguishable
+            from each other.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: |
+            `error.code: repository_already_bound` — the token's repository
+            already has a live policy bound to a different organization.
+            Explicit conflict, not a silent no-op.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429':
+          description: |
+            `error.code: rate_limited` — too many redemption attempts.
+            Distinct from the per-account challenge-issuance limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /v1/monitored-urls:
     post:
@@ -1055,6 +1146,41 @@ components:
               type: array
               items: { $ref: '#/components/schemas/Build' }
             page: { $ref: '#/components/schemas/PageInfo' }
+
+    RepositoryAuthorizeRequest:
+      type: object
+      description: |
+        Repository identity is never accepted here — it comes only from the
+        verified workload OIDC token (spec §4.5), same rule as
+        `BuildRegistration`'s token-derived fields.
+      required: [challenge]
+      additionalProperties: false
+      properties:
+        challenge:
+          type: string
+          description: |
+            The single-use value issued by `POST /v1/orgs/{slug}/challenges`.
+            Bearer secret — never logged, never written to disk by a
+            conforming client.
+
+    RepositoryAuthorization:
+      type: object
+      description: |
+        Confirmation that a challenge was redeemed and the repository is now
+        bound — not a full policy record (constraints, timestamps; see the
+        dashboard-tier policy-management operations).
+      required: [repository_id, organization_id]
+      properties:
+        repository_id:
+          type: string
+          description: Provider's stable repository identifier, same identity space as `Build.repository_id`.
+        organization_id: { type: string }
+
+    RepositoryAuthorizationResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/RepositoryAuthorization' }
 
     MonitoredUrl:
       type: object
