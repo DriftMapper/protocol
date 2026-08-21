@@ -281,9 +281,10 @@ paths:
         `commit_sha` alone is insufficient, since the same commit legitimately builds
         many times.
 
-        Registration accepts a verified workload token before repository binding.
-        The response reports whether the build is bound and, for unbound builds,
-        includes a signup URL so the CLI can surface the onboarding path.
+        Registration requires the repository to already carry a live trusted-
+        workload policy (spec §4.5) — bind the repository first via
+        `authorizeRepository`, then register builds. A token for a repository
+        with no live policy is rejected with `error.code: no_live_policy`.
 
         **This response is the CLI's only template input.** `build_instance_id` and
         `resolution_url` are both server-provided, and the CLI constructs no URLs and
@@ -324,6 +325,9 @@ paths:
             `error.code: claim_mismatch` with the mismatched field under
             `error.details` — see `ClaimMismatchDetails`. A previously bound
             repository whose policy was revoked reports `error.code: policy_revoked`.
+            A repository with no live policy at all — never bound, or never
+            reached `authorizeRepository` — reports `error.code: no_live_policy`;
+            the message points the caller at the challenge/registration flow.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1992,7 +1996,7 @@ components:
             Stable, machine-readable identity of the error. Clients branch on this,
             never on `message`, which may be reworded without a version bump.
             Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-            `unknown_field`, `claim_mismatch`, `policy_revoked`.
+            `unknown_field`, `claim_mismatch`, `policy_revoked`, `no_live_policy`.
         message:
           type: string
           description: Human-readable, safe to display directly.

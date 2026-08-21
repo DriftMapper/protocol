@@ -610,7 +610,7 @@ type Error struct {
 	// Code Stable, machine-readable identity of the error. Clients branch on this,
 	// never on `message`, which may be reworded without a version bump.
 	// Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-	// `unknown_field`, `claim_mismatch`, `policy_revoked`.
+	// `unknown_field`, `claim_mismatch`, `policy_revoked`, `no_live_policy`.
 	Code string `json:"code"`
 
 	// Details Structured, error-specific fields a client can act on programmatically.
