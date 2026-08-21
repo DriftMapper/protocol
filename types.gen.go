@@ -297,7 +297,11 @@ func (e ChangeMemberRoleJSONBodyRole) Valid() bool {
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
-	// Bound Whether this persisted build belongs to a currently bound repository.
+	// Bound Deprecated (DRFT-84): always `true` as of the release registration started
+	// requiring a live trusted-workload policy (DRFT-80) — there is no more unbound
+	// state for this field to report. Scheduled for removal after the N-2
+	// compatibility window closes (DRFT-85).
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	Bound bool `json:"bound"`
 
 	// BuildInstanceId Opaque and server-issued. Content-addressed over the tuple documented on
@@ -306,7 +310,10 @@ type Build struct {
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
 
-	// ClaimUrl Signup URL included only when `bound` is false.
+	// ClaimUrl Deprecated (DRFT-84): always absent as of the same release — `bound` is never
+	// `false` anymore, so there is nothing left for this field to point at. Scheduled
+	// for removal after the N-2 compatibility window closes (DRFT-85).
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	ClaimUrl        *string `json:"claim_url,omitempty"`
 	CommitAuthor    *string `json:"commit_author,omitempty"`
 	CommitCommitter *string `json:"commit_committer,omitempty"`
