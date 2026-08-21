@@ -1546,11 +1546,20 @@ components:
             cannot drift from server routing.
         bound:
           type: boolean
-          description: Whether this persisted build belongs to a currently bound repository.
+          deprecated: true
+          description: |
+            Deprecated (DRFT-84): always `true` as of the release registration started
+            requiring a live trusted-workload policy (DRFT-80) — there is no more unbound
+            state for this field to report. Scheduled for removal after the N-2
+            compatibility window closes (DRFT-85).
         claim_url:
           type: string
           format: uri
-          description: Signup URL included only when `bound` is false.
+          deprecated: true
+          description: |
+            Deprecated (DRFT-84): always absent as of the same release — `bound` is never
+            `false` anymore, so there is nothing left for this field to point at. Scheduled
+            for removal after the N-2 compatibility window closes (DRFT-85).
         metadata: { $ref: '#/components/schemas/BuildMetadata' }
 
     BuildResponse:
