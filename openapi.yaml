@@ -23,16 +23,19 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **The public tier is two operations: `registerBuild` and
-    `authorizeRepository`.** The CLI is a CI-pipeline tool first — it writes a
-    build and generates an HTML file from the response, and it reads nothing.
-    `authorizeRepository` is the one deliberate exception (spec §4.5): redeeming
-    a challenge to bind a repository is itself a write (a policy is created),
-    called from the same customer CI the CLI already runs in, with the same
-    permanent version-skew exposure as build registration. Promoting an
-    operation from `dashboard` to `public` is additive and safe, as noted
-    below — this was the first promotion since the tier was defined, and
-    every operation besides these two is still `dashboard`.
+    **The public tier is three operations: `registerBuild`,
+    `authorizeRepository`, and `recordDeployment`.** The CLI is a CI-pipeline
+    tool first — it writes a build and generates an HTML file from the
+    response, and it reads nothing. `authorizeRepository` is a deliberate
+    exception (spec §4.5): redeeming a challenge to bind a repository is
+    itself a write (a policy is created), called from the same customer CI
+    the CLI already runs in, with the same permanent version-skew exposure
+    as build registration. `recordDeployment` joins the public tier at
+    inception rather than being promoted later, unlike `authorizeRepository`
+    — it is CI-facing by construction (`driftmapper deploy` runs in the same
+    CD pipeline the CLI already writes builds from), so there was never a
+    dashboard-only period for it to start in. Every operation besides these
+    three is `dashboard`.
 
     This is deliberately conservative rather than a judgement that these operations
     will never be CLI-facing; a fully featured CLI is an intended later iteration.
@@ -79,8 +82,9 @@ info:
 
     - `workloadOidc` — a machine principal. The raw OIDC ID token issued by the CI
       provider, presented as a bearer credential. No Driftmapper-issued static token
-      exists anywhere in this system (spec §4). In the MVP this principal reaches
-      exactly one operation: `registerBuild`.
+      exists anywhere in this system (spec §4). This principal reaches exactly the
+      public-tier write operations: `registerBuild`, `authorizeRepository`, and
+      `recordDeployment`.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A).
 
@@ -128,6 +132,12 @@ tags:
     description: |
       Repository authorization — binding a repository to an org via
       challenge redemption (spec §4.5), and listing already-bound repos.
+  - name: deployments
+    description: |
+      Deploy-marking: recording which build is currently live in a named
+      environment (spec's Slice 7). Distinct from `builds`, which is
+      registration/lookup of the build artifact itself — a deployment
+      always references an already-registered build.
   - name: orgs
     description: |
       Organization membership/switching for the signed-in user — which orgs they
@@ -441,6 +451,119 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/deployments:
+    post:
+      operationId: recordDeployment
+      summary: Record that a build is deployed to an environment
+      description: |
+        Called by the CLI during CD (`driftmapper deploy`), or any CI/CD
+        system able to present the same workload OIDC token used for build
+        registration. Authenticated with a workload OIDC token only — a
+        human session cannot use this endpoint; see
+        `recordDeploymentForBuild` for the dashboard-tagging equivalent
+        covering deploys that don't originate from CLI-integrated CI.
+
+        **Repository identity comes only from the verified token**, exactly
+        like `registerBuild`: the token's repository must already carry a
+        live trusted-workload policy (spec §4.5), checked via the identical
+        `ResolveWorkload` logic `registerBuild` uses rather than a separate
+        one. A token for a repository with no live policy is rejected with
+        `error.code: no_live_policy`, one with a revoked policy with
+        `error.code: policy_revoked`, and one whose workflow/ref/environment
+        claims don't satisfy the policy's optional constraints with
+        `error.code: claim_mismatch` — the same three cases and codes
+        `registerBuild` reports for the same underlying check.
+
+        **Naming collision to be aware of:** the claim-mismatch case above
+        can name `environment` as the mismatched field, but that refers to
+        the *token's* `environment` claim (which GitHub Environment, if any,
+        the CI job ran under — an optional policy constraint) — a completely
+        different thing from this request's own `environment` field (the
+        free-text deploy-target name, e.g. `production`). The two share a
+        name but nothing else; a workflow can be constrained to a specific
+        CI-side Environment and still record a deployment to any
+        deploy-target environment name.
+
+        **`build_instance_id` must belong to the token's repository.** A
+        token authorized for one repository cannot record a deployment
+        against another repository's build — attempting to reports the same
+        `404` a genuinely unknown build-instance ID gets, deliberately
+        indistinguishable (existence hiding — a distinguishable error would
+        let a valid token holder probe which build IDs belong to which
+        repository).
+
+        **Environment names** are validated server-side against a
+        DNS-label-style rule — see `Deployment.environment`'s description
+        below. There is no pre-registration step; a name is accepted or
+        rejected outright on submission, and the dashboard always shows the
+        full distinct-environment list for a repository so a typo'd
+        near-duplicate is visible on sight rather than silently split into
+        two.
+
+        **Idempotency and ordering.** Dedupe key is
+        `(repository_id, environment, build_instance_id, deployed_at)` — an
+        identical retry (e.g. after a network failure) resolves to the same
+        row and returns `200`, mirroring `registerBuild`'s own 201/200
+        split. Late-arriving calls are accepted regardless of arrival
+        order: "currently deployed" for an environment is always the row
+        with the maximum `deployed_at`, so an out-of-order write only
+        changes anything if it is genuinely the newest. A rollback is just
+        another call naming an earlier build — there is no update or delete
+        operation on this ledger, ever.
+
+        A build deployed to multiple environments concurrently is the
+        normal case, not special-cased — call this once per environment.
+      tags: [deployments]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentRequest'
+      responses:
+        '201':
+          description: Deployment recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '200':
+          description: |
+            Identical deployment already recorded (same dedupe key);
+            existing record returned unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Token is signature-valid but not authorized for this
+            deployment. `error.code: claim_mismatch` names the specific
+            mismatched field under `error.details` — see
+            `ClaimMismatchDetails` — and note the `environment` naming
+            collision described above. A previously bound repository whose
+            policy was revoked reports `error.code: policy_revoked`. A
+            repository with no live policy at all reports
+            `error.code: no_live_policy`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: |
+            `build_instance_id` does not exist, or exists but does not
+            belong to the token's repository — deliberately
+            indistinguishable, as described above.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
 
   /v1/monitored-urls:
     post:
@@ -779,6 +902,67 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/builds/{buildInstanceId}/deployments:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/BuildInstanceId'
+    post:
+      operationId: recordDeploymentForBuild
+      summary: Tag a build as deployed to an environment (dashboard)
+      description: |
+        The manual-tagging fallback for deploys that don't originate from
+        CLI-integrated CI (spec's deploy-marking design) — lives on the
+        existing resolution page (`/r/{buildInstanceId}`), a one-shot
+        action rather than a dedicated SPA surface. Human principal only,
+        same `OrgScoped` gate shape as `revokePolicy`: Admin/Owner
+        required, since this writes to the deployment audit trail on the
+        caller's behalf, not just reads it.
+
+        `buildInstanceId` is resolved from the URL, and the build must
+        already belong to `slug`'s organization — a build belonging to a
+        different org reports the same `404` an unknown build-instance ID
+        gets (existence hiding, the same convention every other
+        organization-scoped resource in this API uses).
+
+        Shares every other rule with `recordDeployment`: the same
+        environment-name validation, the same idempotency/dedupe key
+        (`201` on a new row, `200` on an identical retry), the same
+        out-of-order-arrival tolerance. The only differences are how the
+        repository is resolved (from the build's own binding, not a fresh
+        OIDC token) and who gets attributed in `deployed_by`
+        (`user:<id>` here, versus a workload identity on the CI path).
+      tags: [deployments]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployBuildRequest'
+      responses:
+        '201':
+          description: Deployment recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '200':
+          description: |
+            Identical deployment already recorded (same dedupe key);
+            existing record returned unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
 
   /v1/orgs/{slug}/repos:
     parameters:
@@ -1580,6 +1764,104 @@ components:
               type: array
               items: { $ref: '#/components/schemas/Build' }
             page: { $ref: '#/components/schemas/PageInfo' }
+
+    # --- Deployments (deploy-marking, spec's Slice 7) -----------------------
+    #
+    # One immutable ledger row per deploy-mark call. No update/delete
+    # operation exists on this resource anywhere in this API — a
+    # correction is always a new row, never an edit.
+    Deployment:
+      type: object
+      description: |
+        One immutable ledger row: this build was recorded as deployed to
+        this environment at this time. "Currently deployed" for an
+        environment is always the newest row by `deployed_at`, never a
+        mutated pointer — a correction is a new row, never an edit.
+      required: [id, repository_id, environment, build_instance_id, deployed_at, deployed_by, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        repository_id:
+          type: string
+          description: Provider's stable repository identifier, same identity space as `Build.repository_id`.
+        environment:
+          type: string
+          description: |
+            Free-text, scoped to this repository (not the organization).
+            Must match `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — lowercase
+            alphanumeric and hyphens, 1-63 characters, starting and ending
+            with an alphanumeric character (the same shape as a Kubernetes
+            namespace name). Rejected outright on submission if it doesn't
+            match this pattern; there is no pre-registration step.
+        build_instance_id:
+          type: string
+          description: The build recorded as deployed. Must already be a registered build (`registerBuild`).
+        deployed_at:
+          type: string
+          format: date-time
+          description: |
+            When the deploy happened, not when this call was made.
+            Out-of-order arrival is accepted: "currently deployed" is
+            always the maximum `deployed_at` for this
+            (repository, environment) pair, so a late-arriving call only
+            changes anything if it is genuinely the newest. A rollback is
+            just another row naming an earlier build.
+        deployed_by:
+          type: string
+          description: |
+            Who recorded this row, discriminated by prefix: `user:<id>`
+            for a deployment tagged from the dashboard, or an issuer-scoped
+            workload identity (`<issuer>:<repository_id>`, e.g.
+            `github:123456`) for one recorded by `recordDeployment`.
+            Exactly one cause per row — never both, never neither —
+            distinguishing a human action from a CI one in the audit trail.
+        created_at:
+          type: string
+          format: date-time
+          description: When this row was written, distinct from `deployed_at`.
+
+    DeploymentResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Deployment' }
+
+    DeploymentRequest:
+      type: object
+      description: |
+        `repository_id` has no field here, mirroring `BuildRegistration`'s
+        token-derived/submitted split — the repository is resolved from
+        the verified workload OIDC token via the same trusted-workload-
+        policy check build registration uses, never from the request.
+      required: [build_instance_id, environment, deployed_at]
+      additionalProperties: false
+      properties:
+        build_instance_id:
+          type: string
+          description: Must already be a registered build belonging to the token's repository.
+        environment:
+          type: string
+          description: See `Deployment.environment` for the validation rule.
+        deployed_at:
+          type: string
+          format: date-time
+
+    DeployBuildRequest:
+      type: object
+      description: |
+        `build_instance_id` comes from the URL (`{buildInstanceId}`), not
+        repeated here — the caller is already on that build's resolution
+        page.
+      required: [environment, deployed_at]
+      additionalProperties: false
+      properties:
+        environment:
+          type: string
+          description: See `Deployment.environment` for the validation rule.
+        deployed_at:
+          type: string
+          format: date-time
 
     RepositoryAuthorizeRequest:
       type: object

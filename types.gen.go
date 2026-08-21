@@ -556,6 +556,78 @@ type ClaimMismatchDetails struct {
 	MismatchedClaim string `json:"mismatched_claim"`
 }
 
+// DeployBuildRequest `build_instance_id` comes from the URL (`{buildInstanceId}`), not
+// repeated here — the caller is already on that build's resolution
+// page.
+type DeployBuildRequest struct {
+	DeployedAt time.Time `json:"deployed_at"`
+
+	// Environment See `Deployment.environment` for the validation rule.
+	Environment string `json:"environment"`
+}
+
+// Deployment One immutable ledger row: this build was recorded as deployed to
+// this environment at this time. "Currently deployed" for an
+// environment is always the newest row by `deployed_at`, never a
+// mutated pointer — a correction is a new row, never an edit.
+type Deployment struct {
+	// BuildInstanceId The build recorded as deployed. Must already be a registered build (`registerBuild`).
+	BuildInstanceId string `json:"build_instance_id"`
+
+	// CreatedAt When this row was written, distinct from `deployed_at`.
+	CreatedAt time.Time `json:"created_at"`
+
+	// DeployedAt When the deploy happened, not when this call was made.
+	// Out-of-order arrival is accepted: "currently deployed" is
+	// always the maximum `deployed_at` for this
+	// (repository, environment) pair, so a late-arriving call only
+	// changes anything if it is genuinely the newest. A rollback is
+	// just another row naming an earlier build.
+	DeployedAt time.Time `json:"deployed_at"`
+
+	// DeployedBy Who recorded this row, discriminated by prefix: `user:<id>`
+	// for a deployment tagged from the dashboard, or an issuer-scoped
+	// workload identity (`<issuer>:<repository_id>`, e.g.
+	// `github:123456`) for one recorded by `recordDeployment`.
+	// Exactly one cause per row — never both, never neither —
+	// distinguishing a human action from a CI one in the audit trail.
+	DeployedBy string `json:"deployed_by"`
+
+	// Environment Free-text, scoped to this repository (not the organization).
+	// Must match `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — lowercase
+	// alphanumeric and hyphens, 1-63 characters, starting and ending
+	// with an alphanumeric character (the same shape as a Kubernetes
+	// namespace name). Rejected outright on submission if it doesn't
+	// match this pattern; there is no pre-registration step.
+	Environment string `json:"environment"`
+	Id          int64  `json:"id"`
+
+	// RepositoryId Provider's stable repository identifier, same identity space as `Build.repository_id`.
+	RepositoryId string `json:"repository_id"`
+}
+
+// DeploymentRequest `repository_id` has no field here, mirroring `BuildRegistration`'s
+// token-derived/submitted split — the repository is resolved from
+// the verified workload OIDC token via the same trusted-workload-
+// policy check build registration uses, never from the request.
+type DeploymentRequest struct {
+	// BuildInstanceId Must already be a registered build belonging to the token's repository.
+	BuildInstanceId string    `json:"build_instance_id"`
+	DeployedAt      time.Time `json:"deployed_at"`
+
+	// Environment See `Deployment.environment` for the validation rule.
+	Environment string `json:"environment"`
+}
+
+// DeploymentResponse defines model for DeploymentResponse.
+type DeploymentResponse struct {
+	// Data One immutable ledger row: this build was recorded as deployed to
+	// this environment at this time. "Currently deployed" for an
+	// environment is always the newest row by `deployed_at`, never a
+	// mutated pointer — a correction is a new row, never an edit.
+	Data Deployment `json:"data"`
+}
+
 // DriftEvent defines model for DriftEvent.
 type DriftEvent struct {
 	CurrentBuildInstanceId *string `json:"current_build_instance_id,omitempty"`
@@ -1154,6 +1226,9 @@ type CreatePortalSessionJSONRequestBody CreatePortalSessionJSONBody
 // RegisterBuildJSONRequestBody defines body for RegisterBuild for application/json ContentType.
 type RegisterBuildJSONRequestBody = BuildRegistration
 
+// RecordDeploymentJSONRequestBody defines body for RecordDeployment for application/json ContentType.
+type RecordDeploymentJSONRequestBody = DeploymentRequest
+
 // CreateMonitoredUrlJSONRequestBody defines body for CreateMonitoredUrl for application/json ContentType.
 type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
 
@@ -1162,6 +1237,9 @@ type CreateOrgJSONRequestBody CreateOrgJSONBody
 
 // UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
 type UpdateOrgJSONRequestBody UpdateOrgJSONBody
+
+// RecordDeploymentForBuildJSONRequestBody defines body for RecordDeploymentForBuild for application/json ContentType.
+type RecordDeploymentForBuildJSONRequestBody = DeployBuildRequest
 
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody InviteMemberJSONBody
