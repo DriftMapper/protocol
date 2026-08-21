@@ -560,30 +560,29 @@ type ClaimMismatchDetails struct {
 // repeated here — the caller is already on that build's resolution
 // page.
 type DeployBuildRequest struct {
-	DeployedAt time.Time `json:"deployed_at"`
-
 	// Environment See `Deployment.environment` for the validation rule.
 	Environment string `json:"environment"`
 }
 
 // Deployment One immutable ledger row: this build was recorded as deployed to
-// this environment at this time. "Currently deployed" for an
-// environment is always the newest row by `deployed_at`, never a
-// mutated pointer — a correction is a new row, never an edit.
+// this environment. Rows always arrive in order — the server stamps
+// `created_at` at request time, so "currently deployed" for an
+// environment is always the newest row by `created_at`, never a
+// mutated pointer. A correction is a new row, never an edit.
 type Deployment struct {
-	// BuildInstanceId The build recorded as deployed. Must already be a registered build (`registerBuild`).
+	// BuildInstanceId The build recorded as deployed. On the CI path this is what
+	// `commit_sha` resolved to — returned so the caller can see
+	// which build its commit resolved to (multiple builds can share
+	// a commit; newest wins). Must already be a registered build
+	// (`registerBuild`).
 	BuildInstanceId string `json:"build_instance_id"`
 
-	// CreatedAt When this row was written, distinct from `deployed_at`.
+	// CreatedAt Server-stamped at request time — the sole ordering key for
+	// "currently deployed." Never client-supplied: an out-of-range
+	// client timestamp here would have been a permanent,
+	// uncorrectable corruption of that answer on an insert-only
+	// ledger, so the server stamps it instead of trusting the caller.
 	CreatedAt time.Time `json:"created_at"`
-
-	// DeployedAt When the deploy happened, not when this call was made.
-	// Out-of-order arrival is accepted: "currently deployed" is
-	// always the maximum `deployed_at` for this
-	// (repository, environment) pair, so a late-arriving call only
-	// changes anything if it is genuinely the newest. A rollback is
-	// just another row naming an earlier build.
-	DeployedAt time.Time `json:"deployed_at"`
 
 	// DeployedBy Who recorded this row, discriminated by prefix: `user:<id>`
 	// for a deployment tagged from the dashboard, or an issuer-scoped
@@ -604,16 +603,40 @@ type Deployment struct {
 
 	// RepositoryId Provider's stable repository identifier, same identity space as `Build.repository_id`.
 	RepositoryId string `json:"repository_id"`
+
+	// RunAttempt The deploy-triggering CI run's `run_attempt` claim — a manual
+	// re-run of the same deploy bumps only this. Distinct from
+	// `Build.run_attempt` for the same reason as `run_id`. Absent
+	// (`null`) on dashboard-tagged rows.
+	RunAttempt *string `json:"run_attempt,omitempty"`
+
+	// RunId The deploy-triggering CI run's `run_id` OIDC claim. Distinct
+	// from `Build.run_id`, which describes the run that produced the
+	// build, not the run that deployed it. Absent (`null`) on
+	// dashboard-tagged rows, which have no run identity.
+	RunId *string `json:"run_id,omitempty"`
 }
 
 // DeploymentRequest `repository_id` has no field here, mirroring `BuildRegistration`'s
 // token-derived/submitted split — the repository is resolved from
 // the verified workload OIDC token via the same trusted-workload-
 // policy check build registration uses, never from the request.
+//
+// Carries `commit_sha`, not `build_instance_id` — a deploy step
+// generally cannot know the opaque, server-derived build-instance ID
+// (it may live only inside a Docker image layer the deploy job never
+// unpacks, or in a separate CI run's stdout). Every deploy topology,
+// by contrast, knows the commit it is shipping.
 type DeploymentRequest struct {
-	// BuildInstanceId Must already be a registered build belonging to the token's repository.
-	BuildInstanceId string    `json:"build_instance_id"`
-	DeployedAt      time.Time `json:"deployed_at"`
+	// CommitSha The commit being deployed. The server resolves the newest
+	// registered build for this commit, scoped to the token's
+	// repository — an unknown commit, or one belonging to a
+	// different repository, is a `404` (existence hiding, same
+	// convention as an unknown build-instance ID). A commit with
+	// more than one registered build (a manual re-run bumping
+	// `run_attempt`, or multiple workflows registering the same
+	// commit) resolves to the newest by `registered_at`.
+	CommitSha string `json:"commit_sha"`
 
 	// Environment See `Deployment.environment` for the validation rule.
 	Environment string `json:"environment"`
@@ -622,9 +645,10 @@ type DeploymentRequest struct {
 // DeploymentResponse defines model for DeploymentResponse.
 type DeploymentResponse struct {
 	// Data One immutable ledger row: this build was recorded as deployed to
-	// this environment at this time. "Currently deployed" for an
-	// environment is always the newest row by `deployed_at`, never a
-	// mutated pointer — a correction is a new row, never an edit.
+	// this environment. Rows always arrive in order — the server stamps
+	// `created_at` at request time, so "currently deployed" for an
+	// environment is always the newest row by `created_at`, never a
+	// mutated pointer. A correction is a new row, never an edit.
 	Data Deployment `json:"data"`
 }
 

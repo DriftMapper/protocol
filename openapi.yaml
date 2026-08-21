@@ -485,13 +485,16 @@ paths:
         CI-side Environment and still record a deployment to any
         deploy-target environment name.
 
-        **`build_instance_id` must belong to the token's repository.** A
-        token authorized for one repository cannot record a deployment
-        against another repository's build — attempting to reports the same
-        `404` a genuinely unknown build-instance ID gets, deliberately
-        indistinguishable (existence hiding — a distinguishable error would
-        let a valid token holder probe which build IDs belong to which
-        repository).
+        **`commit_sha` resolves to a build belonging to the token's
+        repository.** The server looks up the newest registered build for
+        `(repository_id, commit_sha)`, `repository_id` coming only from the
+        verified token. An unknown commit, or one belonging to a different
+        repository, reports the same `404`, deliberately indistinguishable
+        (existence hiding — a distinguishable error would let a valid token
+        holder probe which commits belong to which repository). A commit
+        with more than one registered build resolves to the newest by
+        `registered_at` — a manual re-run bumps only `run_attempt`, and
+        multiple workflows can register the same commit.
 
         **Environment names** are validated server-side against a
         DNS-label-style rule — see `Deployment.environment`'s description
@@ -501,16 +504,21 @@ paths:
         near-duplicate is visible on sight rather than silently split into
         two.
 
-        **Idempotency and ordering.** Dedupe key is
-        `(repository_id, environment, build_instance_id, deployed_at)` — an
+        **Timing and ordering.** The server stamps `created_at` at request
+        time — the client never sends a timestamp. Rows always arrive in
+        order; "currently deployed" for an environment is always the row
+        with the maximum `created_at`. A rollback is just another call
+        naming an earlier build — there is no update or delete operation on
+        this ledger, ever.
+
+        **Idempotency.** Dedupe key is
+        `(repository_id, environment, build_instance_id, run_id, run_attempt)`,
+        `run_id`/`run_attempt` coming from the verified token's OIDC claims
+        (the deploy-triggering run's identity, not the build's). An
         identical retry (e.g. after a network failure) resolves to the same
         row and returns `200`, mirroring `registerBuild`'s own 201/200
-        split. Late-arriving calls are accepted regardless of arrival
-        order: "currently deployed" for an environment is always the row
-        with the maximum `deployed_at`, so an out-of-order write only
-        changes anything if it is genuinely the newest. A rollback is just
-        another call naming an earlier build — there is no update or delete
-        operation on this ledger, ever.
+        split. A later run for the same build/environment — a genuine
+        roll-forward, not a retry — inserts a new row and returns `201`.
 
         A build deployed to multiple environments concurrently is the
         normal case, not special-cased — call this once per environment.
@@ -556,9 +564,9 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '404':
           description: |
-            `build_instance_id` does not exist, or exists but does not
-            belong to the token's repository — deliberately
-            indistinguishable, as described above.
+            `commit_sha` has no registered build under the token's
+            repository, or has one belonging to a different repository —
+            deliberately indistinguishable, as described above.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -925,13 +933,16 @@ paths:
         gets (existence hiding, the same convention every other
         organization-scoped resource in this API uses).
 
-        Shares every other rule with `recordDeployment`: the same
-        environment-name validation, the same idempotency/dedupe key
-        (`201` on a new row, `200` on an identical retry), the same
-        out-of-order-arrival tolerance. The only differences are how the
-        repository is resolved (from the build's own binding, not a fresh
-        OIDC token) and who gets attributed in `deployed_by`
-        (`user:<id>` here, versus a workload identity on the CI path).
+        Shares environment-name validation and server-stamped `created_at`
+        with `recordDeployment`, but sits outside that endpoint's dedupe
+        index: there is no run identity on this path (no OIDC token), so
+        every call inserts a new row and returns `201` — always, never
+        `200`, even for an apparent repeat. The differences from the CI
+        path are how the repository is resolved (from the build's own
+        binding, not a fresh OIDC token), who gets attributed in
+        `deployed_by` (`user:<id>` here, versus a workload identity on the
+        CI path), and that `run_id`/`run_attempt` are always absent on
+        rows this endpoint writes.
       tags: [deployments]
       x-stability: dashboard
       security:
@@ -944,14 +955,10 @@ paths:
               $ref: '#/components/schemas/DeployBuildRequest'
       responses:
         '201':
-          description: Deployment recorded.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/DeploymentResponse' }
-        '200':
           description: |
-            Identical deployment already recorded (same dedupe key);
-            existing record returned unchanged.
+            Deployment recorded. Always `201` on this path — there is no
+            run identity to dedupe against, so an apparent repeat still
+            inserts a new row.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeploymentResponse' }
@@ -1774,10 +1781,11 @@ components:
       type: object
       description: |
         One immutable ledger row: this build was recorded as deployed to
-        this environment at this time. "Currently deployed" for an
-        environment is always the newest row by `deployed_at`, never a
-        mutated pointer — a correction is a new row, never an edit.
-      required: [id, repository_id, environment, build_instance_id, deployed_at, deployed_by, created_at]
+        this environment. Rows always arrive in order — the server stamps
+        `created_at` at request time, so "currently deployed" for an
+        environment is always the newest row by `created_at`, never a
+        mutated pointer. A correction is a new row, never an edit.
+      required: [id, repository_id, environment, build_instance_id, deployed_by, created_at]
       properties:
         id:
           type: integer
@@ -1796,17 +1804,28 @@ components:
             match this pattern; there is no pre-registration step.
         build_instance_id:
           type: string
-          description: The build recorded as deployed. Must already be a registered build (`registerBuild`).
-        deployed_at:
-          type: string
-          format: date-time
           description: |
-            When the deploy happened, not when this call was made.
-            Out-of-order arrival is accepted: "currently deployed" is
-            always the maximum `deployed_at` for this
-            (repository, environment) pair, so a late-arriving call only
-            changes anything if it is genuinely the newest. A rollback is
-            just another row naming an earlier build.
+            The build recorded as deployed. On the CI path this is what
+            `commit_sha` resolved to — returned so the caller can see
+            which build its commit resolved to (multiple builds can share
+            a commit; newest wins). Must already be a registered build
+            (`registerBuild`).
+        run_id:
+          type: string
+          nullable: true
+          description: |
+            The deploy-triggering CI run's `run_id` OIDC claim. Distinct
+            from `Build.run_id`, which describes the run that produced the
+            build, not the run that deployed it. Absent (`null`) on
+            dashboard-tagged rows, which have no run identity.
+        run_attempt:
+          type: string
+          nullable: true
+          description: |
+            The deploy-triggering CI run's `run_attempt` claim — a manual
+            re-run of the same deploy bumps only this. Distinct from
+            `Build.run_attempt` for the same reason as `run_id`. Absent
+            (`null`) on dashboard-tagged rows.
         deployed_by:
           type: string
           description: |
@@ -1819,7 +1838,12 @@ components:
         created_at:
           type: string
           format: date-time
-          description: When this row was written, distinct from `deployed_at`.
+          description: |
+            Server-stamped at request time — the sole ordering key for
+            "currently deployed." Never client-supplied: an out-of-range
+            client timestamp here would have been a permanent,
+            uncorrectable corruption of that answer on an insert-only
+            ledger, so the server stamps it instead of trusting the caller.
 
     DeploymentResponse:
       type: object
@@ -1834,18 +1858,29 @@ components:
         token-derived/submitted split — the repository is resolved from
         the verified workload OIDC token via the same trusted-workload-
         policy check build registration uses, never from the request.
-      required: [build_instance_id, environment, deployed_at]
+
+        Carries `commit_sha`, not `build_instance_id` — a deploy step
+        generally cannot know the opaque, server-derived build-instance ID
+        (it may live only inside a Docker image layer the deploy job never
+        unpacks, or in a separate CI run's stdout). Every deploy topology,
+        by contrast, knows the commit it is shipping.
+      required: [commit_sha, environment]
       additionalProperties: false
       properties:
-        build_instance_id:
+        commit_sha:
           type: string
-          description: Must already be a registered build belonging to the token's repository.
+          description: |
+            The commit being deployed. The server resolves the newest
+            registered build for this commit, scoped to the token's
+            repository — an unknown commit, or one belonging to a
+            different repository, is a `404` (existence hiding, same
+            convention as an unknown build-instance ID). A commit with
+            more than one registered build (a manual re-run bumping
+            `run_attempt`, or multiple workflows registering the same
+            commit) resolves to the newest by `registered_at`.
         environment:
           type: string
           description: See `Deployment.environment` for the validation rule.
-        deployed_at:
-          type: string
-          format: date-time
 
     DeployBuildRequest:
       type: object
@@ -1853,15 +1888,12 @@ components:
         `build_instance_id` comes from the URL (`{buildInstanceId}`), not
         repeated here — the caller is already on that build's resolution
         page.
-      required: [environment, deployed_at]
+      required: [environment]
       additionalProperties: false
       properties:
         environment:
           type: string
           description: See `Deployment.environment` for the validation rule.
-        deployed_at:
-          type: string
-          format: date-time
 
     RepositoryAuthorizeRequest:
       type: object
