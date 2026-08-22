@@ -235,6 +235,21 @@ func (e Provider) Valid() bool {
 	}
 }
 
+// Defines values for VerificationKind.
+const (
+	Verify VerificationKind = "verify"
+)
+
+// Valid indicates whether the value is a known member of the VerificationKind enum.
+func (e VerificationKind) Valid() bool {
+	switch e {
+	case Verify:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Visibility.
 const (
 	Internal Visibility = "internal"
@@ -1092,6 +1107,81 @@ type UserResponse struct {
 	Data User `json:"data"`
 }
 
+// Verification One immutable ledger row: an identity asserted this build was
+// observed live in this environment. Same shape as `Deployment` but a
+// distinct assertion `kind` (`verify`, not `deploy`) — it is an
+// independent claim in the same coordinate space (build, environment,
+// time), never a confirmation of a particular deployment record.
+// Rows are insert-only; "verified" is a read-time comparison of the
+// latest `deploy` vs. latest `verify` claim, and a disagreement is the
+// drift signal, not an error state.
+type Verification struct {
+	// AssertedBy The identity that made this claim, discriminated by prefix:
+	// `ci:<issuer>:<repository_id>` (e.g. `ci:github:123456`) for a
+	// workload, or `user:<id>` for a human.
+	AssertedBy string `json:"asserted_by"`
+
+	// BuildInstanceId The build asserted as observed live.
+	BuildInstanceId string `json:"build_instance_id"`
+
+	// CreatedAt Server-stamped at request time — the sole ordering key. Never
+	// client-supplied, same reasoning as `Deployment.created_at`.
+	CreatedAt time.Time `json:"created_at"`
+
+	// Environment Free-text, scoped to this repository. Must match
+	// `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — same DNS-label rule as
+	// `Deployment.environment`.
+	Environment string `json:"environment"`
+	Id          int64  `json:"id"`
+
+	// Kind Always `verify` on this resource.
+	Kind VerificationKind `json:"kind"`
+
+	// RepositoryId The build's **owning** repository's stable provider id — same
+	// identity space as `Build.repository_id`. Always the build's
+	// owner, never the caller's token claim.
+	RepositoryId string `json:"repository_id"`
+
+	// RunAttempt The verifying CI run's `run_attempt` claim.
+	RunAttempt *string `json:"run_attempt,omitempty"`
+
+	// RunId The verifying CI run's `run_id` OIDC claim. Absent (`null`) on
+	// rows with no run identity.
+	RunId *string `json:"run_id,omitempty"`
+}
+
+// VerificationKind Always `verify` on this resource.
+type VerificationKind string
+
+// VerificationRequest `repository_id` has no field here, mirroring `DeploymentRequest`'s
+// token-derived/submitted split — the repository is resolved from the
+// verified workload OIDC token, never from the request. Carries
+// `build_instance_id`, not `commit_sha`: unlike a deploy step, the
+// verifying step knows the build-instance ID it is asserting (it read
+// it off the deployed `build-info.html`).
+type VerificationRequest struct {
+	// BuildInstanceId The build asserted as observed live. Must be an already-registered
+	// build (`registerBuild`); an unknown ID is a `404` (existence
+	// hiding).
+	BuildInstanceId string `json:"build_instance_id"`
+
+	// Environment See `Verification.environment` for the validation rule.
+	Environment string `json:"environment"`
+}
+
+// VerificationResponse defines model for VerificationResponse.
+type VerificationResponse struct {
+	// Data One immutable ledger row: an identity asserted this build was
+	// observed live in this environment. Same shape as `Deployment` but a
+	// distinct assertion `kind` (`verify`, not `deploy`) — it is an
+	// independent claim in the same coordinate space (build, environment,
+	// time), never a confirmation of a particular deployment record.
+	// Rows are insert-only; "verified" is a read-time comparison of the
+	// latest `deploy` vs. latest `verify` claim, and a disagreement is the
+	// drift signal, not an error state.
+	Data Verification `json:"data"`
+}
+
 // Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
 // This is what gates the Free tier's public-repo allowance (spec §6A), so it is
 // enforced from the signed token with no VCS API call.
@@ -1276,3 +1366,6 @@ type UpdatePolicyJSONRequestBody = UpdatePolicyRequest
 
 // AuthorizeRepositoryJSONRequestBody defines body for AuthorizeRepository for application/json ContentType.
 type AuthorizeRepositoryJSONRequestBody = RepositoryAuthorizeRequest
+
+// RecordVerificationJSONRequestBody defines body for RecordVerification for application/json ContentType.
+type RecordVerificationJSONRequestBody = VerificationRequest
