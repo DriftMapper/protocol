@@ -23,19 +23,24 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **The public tier is three operations: `registerBuild`,
-    `authorizeRepository`, and `recordDeployment`.** The CLI is a CI-pipeline
-    tool first — it writes a build and generates an HTML file from the
-    response, and it reads nothing. `authorizeRepository` is a deliberate
-    exception (spec §4.5): redeeming a challenge to bind a repository is
-    itself a write (a policy is created), called from the same customer CI
-    the CLI already runs in, with the same permanent version-skew exposure
-    as build registration. `recordDeployment` joins the public tier at
-    inception rather than being promoted later, unlike `authorizeRepository`
-    — it is CI-facing by construction (`driftmapper deploy` runs in the same
-    CD pipeline the CLI already writes builds from), so there was never a
-    dashboard-only period for it to start in. Every operation besides these
-    three is `dashboard`.
+    **The public tier is four operations: `registerBuild`,
+    `authorizeRepository`, `recordDeployment`, and `recordVerification`.**
+    The CLI is a CI-pipeline tool first — it writes a build and generates an
+    HTML file from the response, and it reads nothing. `authorizeRepository`
+    is a deliberate exception (spec §4.5): redeeming a challenge to bind a
+    repository is itself a write (a policy is created), called from the same
+    customer CI the CLI already runs in, with the same permanent version-skew
+    exposure as build registration. `recordDeployment` joins the public tier
+    at inception rather than being promoted later, unlike
+    `authorizeRepository` — it is CI-facing by construction
+    (`driftmapper deploy` runs in the same CD pipeline the CLI already writes
+    builds from), so there was never a dashboard-only period for it to start
+    in. `recordVerification` is the same case as `recordDeployment`: a
+    standalone `driftmapper verify` step asserting that a build was observed
+    live in an environment (its own assertion kind per the Assertion/Binding
+    model, independent of deploy), written from the same customer CI, so it
+    starts public at inception too. Every operation besides these four is
+    `dashboard`.
 
     This is deliberately conservative rather than a judgement that these operations
     will never be CLI-facing; a fully featured CLI is an intended later iteration.
@@ -83,8 +88,8 @@ info:
     - `workloadOidc` — a machine principal. The raw OIDC ID token issued by the CI
       provider, presented as a bearer credential. No Driftmapper-issued static token
       exists anywhere in this system (spec §4). This principal reaches exactly the
-      public-tier write operations: `registerBuild`, `authorizeRepository`, and
-      `recordDeployment`.
+      public-tier write operations: `registerBuild`, `authorizeRepository`,
+      `recordDeployment`, and `recordVerification`.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A).
 
@@ -134,10 +139,13 @@ tags:
       challenge redemption (spec §4.5), and listing already-bound repos.
   - name: deployments
     description: |
-      Deploy-marking: recording which build is currently live in a named
-      environment (spec's Slice 7). Distinct from `builds`, which is
-      registration/lookup of the build artifact itself — a deployment
-      always references an already-registered build.
+      Assertions in the deploy/verify coordinate space (spec's Slice 7): a
+      deploy-mark records which build is currently live in a named
+      environment; a verification records an identity asserting a build was
+      observed live in one. Distinct from `builds`, which is
+      registration/lookup of the build artifact itself — both always
+      reference an already-registered build. The two are independent claims
+      in the same space; their read-time comparison is the drift signal.
   - name: orgs
     description: |
       Organization membership/switching for the signed-in user — which orgs they
@@ -567,6 +575,106 @@ paths:
             `commit_sha` has no registered build under the token's
             repository, or has one belonging to a different repository —
             deliberately indistinguishable, as described above.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/verifications:
+    post:
+      operationId: recordVerification
+      summary: Record that a build was verified live in an environment
+      description: |
+        Called by the CLI during CD (`driftmapper verify <build-instance-id>
+        -env <name>`), or any CI/CD system able to present the same workload
+        OIDC token used for build registration. Authenticated with a workload
+        OIDC token only — a human session cannot use this endpoint.
+
+        **This is a pure write, not a check.** Verification is its own
+        assertion `kind` in the same immutable coordinate space as
+        `recordDeployment` (build, environment, time): this endpoint records
+        that an identity asserts build X was observed live in environment Y.
+        DriftMapper does not itself fetch the environment or compare anything
+        against reality (spec DRFT-27) — "verified" is a read-time comparison
+        of the latest `deploy` vs. latest `verify` claim for a build +
+        environment, and a disagreement between the two *is* the drift signal,
+        not an error state. This call never references, blocks, or retries a
+        `recordDeployment` call — it is independent, on its own schedule.
+
+        **`build_instance_id` is carried directly** (unlike
+        `recordDeployment`, which carries `commit_sha`): the verifier reads
+        the build-instance ID off the deployed `build-info.html` itself (spec
+        §2.3's meta-tag contract) and passes it as the positional argument, so
+        the server does no commit resolution. The server resolves the build's
+        **owning** repository from the ID, never from the token.
+
+        **Repository identity comes only from the verified token**, exactly
+        like `recordDeployment`: the token's repository must already carry a
+        live trusted-workload policy (spec §4.5), checked via the identical
+        `ResolveWorkload` logic — the same `no_live_policy`,
+        `policy_revoked`, and `claim_mismatch` error cases apply. When the
+        token's repository is not the build's owning repository, an active
+        `bindings` row of `kind='verify'` for that
+        `(acting_repository_id, target_repository_id)` pair is required; a
+        missing one reports the same `404` an unknown build-instance ID gets
+        (existence hiding).
+
+        **Environment names** are validated server-side against the same
+        DNS-label-style rule as `recordDeployment` — see
+        `Verification.environment` below. The server stamps `created_at` at
+        request time; the client never sends a timestamp.
+
+        **Idempotency.** Dedupe key is
+        `(kind, repository_id, environment, build_instance_id, run_id,
+        run_attempt)`, `run_id`/`run_attempt` coming from the verified token's
+        OIDC claims (the verifying run's identity). An identical retry
+        resolves to the same row and returns `200`, mirroring
+        `recordDeployment`'s own 201/200 split.
+      tags: [deployments]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationRequest'
+      responses:
+        '201':
+          description: Verification recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationResponse' }
+        '200':
+          description: |
+            Identical verification already recorded (same dedupe key);
+            existing record returned unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Token is signature-valid but not authorized for this
+            verification. `error.code: claim_mismatch` names the specific
+            mismatched field under `error.details` — see
+            `ClaimMismatchDetails`. A previously bound repository whose
+            policy was revoked reports `error.code: policy_revoked`. A
+            repository with no live policy at all reports
+            `error.code: no_live_policy`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: |
+            `build_instance_id` has no registered build, or (for a cross-repo
+            verifier) belongs to a repository the caller has no `kind='verify'`
+            binding to — deliberately indistinguishable, as described above.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1894,6 +2002,92 @@ components:
         environment:
           type: string
           description: See `Deployment.environment` for the validation rule.
+
+    Verification:
+      type: object
+      description: |
+        One immutable ledger row: an identity asserted this build was
+        observed live in this environment. Same shape as `Deployment` but a
+        distinct assertion `kind` (`verify`, not `deploy`) — it is an
+        independent claim in the same coordinate space (build, environment,
+        time), never a confirmation of a particular deployment record.
+        Rows are insert-only; "verified" is a read-time comparison of the
+        latest `deploy` vs. latest `verify` claim, and a disagreement is the
+        drift signal, not an error state.
+      required: [id, kind, repository_id, environment, build_instance_id, asserted_by, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          enum: [verify]
+          description: Always `verify` on this resource.
+        repository_id:
+          type: string
+          description: |
+            The build's **owning** repository's stable provider id — same
+            identity space as `Build.repository_id`. Always the build's
+            owner, never the caller's token claim.
+        environment:
+          type: string
+          description: |
+            Free-text, scoped to this repository. Must match
+            `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — same DNS-label rule as
+            `Deployment.environment`.
+        build_instance_id:
+          type: string
+          description: The build asserted as observed live.
+        run_id:
+          type: string
+          nullable: true
+          description: |
+            The verifying CI run's `run_id` OIDC claim. Absent (`null`) on
+            rows with no run identity.
+        run_attempt:
+          type: string
+          nullable: true
+          description: The verifying CI run's `run_attempt` claim.
+        asserted_by:
+          type: string
+          description: |
+            The identity that made this claim, discriminated by prefix:
+            `ci:<issuer>:<repository_id>` (e.g. `ci:github:123456`) for a
+            workload, or `user:<id>` for a human.
+        created_at:
+          type: string
+          format: date-time
+          description: |
+            Server-stamped at request time — the sole ordering key. Never
+            client-supplied, same reasoning as `Deployment.created_at`.
+
+    VerificationResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Verification' }
+
+    VerificationRequest:
+      type: object
+      description: |
+        `repository_id` has no field here, mirroring `DeploymentRequest`'s
+        token-derived/submitted split — the repository is resolved from the
+        verified workload OIDC token, never from the request. Carries
+        `build_instance_id`, not `commit_sha`: unlike a deploy step, the
+        verifying step knows the build-instance ID it is asserting (it read
+        it off the deployed `build-info.html`).
+      required: [build_instance_id, environment]
+      additionalProperties: false
+      properties:
+        build_instance_id:
+          type: string
+          description: |
+            The build asserted as observed live. Must be an already-registered
+            build (`registerBuild`); an unknown ID is a `404` (existence
+            hiding).
+        environment:
+          type: string
+          description: See `Verification.environment` for the validation rule.
 
     RepositoryAuthorizeRequest:
       type: object
