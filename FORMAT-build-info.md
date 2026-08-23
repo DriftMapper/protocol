@@ -10,7 +10,7 @@ versioned treatment.
 
 Reference implementation: `driftmapper/cli`'s `internal/buildinfo` package
 (`Generate` writes this shape; `Parse`, added with DRFT-98's opinionated
-verify, reads it). `driftmapper verify <deployment-id>` is this format's
+verify, reads it). `driftmapper verify <environment>` is this format's
 first first-party consumer — it fetches a deployed copy, parses the meta
 tags, and records what it found. Third-party tooling (synthetic
 monitoring, uptime checks — see this org's "feed existing tools instead of

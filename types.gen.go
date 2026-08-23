@@ -709,7 +709,7 @@ type Deployment struct {
 	// Url Where this deployment lives — the absolute URL of the deployed
 	// `build-info.html`, recorded by `recordDeployment`'s optional
 	// `url` field. Null on rows that predate the field or omitted it;
-	// deployment-keyed verification (`getDeployment` → fetch →
+	// deployment-keyed verification (`getCurrentDeployment` → fetch →
 	// compare) is only possible for rows that carry one. HTTPS.
 	Url *string `json:"url,omitempty"`
 }
@@ -743,9 +743,10 @@ type DeploymentRequest struct {
 
 	// Url Optional. Absolute HTTPS URL of the deployed `build-info.html`
 	// for this deployment — the target a keyed verification will
-	// fetch (`driftmapper verify <deployment-id>`). Omitted rows are
+	// fetch (`driftmapper verify <environment>`). Omitted rows are
 	// verifiable only by callers that supply their own URL; recording
-	// it is strongly recommended so the handle alone suffices later.
+	// it is strongly recommended so the environment name alone
+	// suffices later.
 	Url *string `json:"url,omitempty"`
 }
 
@@ -1306,9 +1307,9 @@ type VerificationRequest struct {
 	// unknown ID is a `404` (existence hiding).
 	BuildInstanceId string `json:"build_instance_id"`
 
-	// DeploymentId Optional. The deployment row this check ran against
-	// (`getDeployment`). Provenance only — never a gate or reference
-	// the server acts on beyond attribution.
+	// DeploymentId Optional. The deployment row this check ran against (resolved
+	// via `getCurrentDeployment`). Provenance only — never a gate or
+	// reference the server acts on beyond attribution.
 	DeploymentId *int64 `json:"deployment_id,omitempty"`
 
 	// Environment See `Verification.environment` for the validation rule.
@@ -1377,11 +1378,17 @@ type Cursor = string
 // DeploymentId defines model for DeploymentId.
 type DeploymentId = int64
 
+// Environment defines model for Environment.
+type Environment = string
+
 // Limit defines model for Limit.
 type Limit = int
 
 // OrgSlug defines model for OrgSlug.
 type OrgSlug = string
+
+// TargetRepository defines model for TargetRepository.
+type TargetRepository = string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = ErrorEnvelope
@@ -1415,6 +1422,22 @@ type CreateCheckoutSessionJSONBody struct {
 // CreatePortalSessionJSONBody defines parameters for CreatePortalSession.
 type CreatePortalSessionJSONBody struct {
 	ReturnUrl string `json:"return_url"`
+}
+
+// GetCurrentDeploymentParams defines parameters for GetCurrentDeployment.
+type GetCurrentDeploymentParams struct {
+	// Env The deploy-target environment whose current deployment to read — the
+	// same free-text, repository-scoped name `recordDeployment` accepted,
+	// spelled identically. No pre-registration step exists, so an unknown
+	// name is indistinguishable from an empty one (existence hiding).
+	Env Environment `form:"env" json:"env"`
+
+	// Repo Optional `owner/name` of another repository whose environment to
+	// read — for independent verification by a separate repository (an
+	// e2e suite verifying the deployer's environment). Requires an active
+	// `kind='verify'` binding; without one, indistinguishable from any
+	// other 404. Omit to read the token's own repository.
+	Repo *TargetRepository `form:"repo,omitempty" json:"repo,omitempty"`
 }
 
 // ListDriftEventsParams defines parameters for ListDriftEvents.
