@@ -55,6 +55,21 @@ func (e ChallengeIssuedStatus) Valid() bool {
 	}
 }
 
+// Defines values for DeploymentKind.
+const (
+	Deploy DeploymentKind = "deploy"
+)
+
+// Valid indicates whether the value is a known member of the DeploymentKind enum.
+func (e DeploymentKind) Valid() bool {
+	switch e {
+	case Deploy:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DriftEventType.
 const (
 	BuildIdChanged           DriftEventType = "build_id_changed"
@@ -244,6 +259,54 @@ const (
 func (e VerificationKind) Valid() bool {
 	switch e {
 	case Verify:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VerificationOutcome.
+const (
+	VerificationOutcomeFetchFailed VerificationOutcome = "fetch_failed"
+	VerificationOutcomeMismatch    VerificationOutcome = "mismatch"
+	VerificationOutcomeParseFailed VerificationOutcome = "parse_failed"
+	VerificationOutcomeVerified    VerificationOutcome = "verified"
+)
+
+// Valid indicates whether the value is a known member of the VerificationOutcome enum.
+func (e VerificationOutcome) Valid() bool {
+	switch e {
+	case VerificationOutcomeFetchFailed:
+		return true
+	case VerificationOutcomeMismatch:
+		return true
+	case VerificationOutcomeParseFailed:
+		return true
+	case VerificationOutcomeVerified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VerificationRequestOutcome.
+const (
+	VerificationRequestOutcomeFetchFailed VerificationRequestOutcome = "fetch_failed"
+	VerificationRequestOutcomeMismatch    VerificationRequestOutcome = "mismatch"
+	VerificationRequestOutcomeParseFailed VerificationRequestOutcome = "parse_failed"
+	VerificationRequestOutcomeVerified    VerificationRequestOutcome = "verified"
+)
+
+// Valid indicates whether the value is a known member of the VerificationRequestOutcome enum.
+func (e VerificationRequestOutcome) Valid() bool {
+	switch e {
+	case VerificationRequestOutcomeFetchFailed:
+		return true
+	case VerificationRequestOutcomeMismatch:
+		return true
+	case VerificationRequestOutcomeParseFailed:
+		return true
+	case VerificationRequestOutcomeVerified:
 		return true
 	default:
 		return false
@@ -584,12 +647,17 @@ type DeployBuildRequest struct {
 // `created_at` at request time, so "currently deployed" for an
 // environment is always the newest row by `created_at`, never a
 // mutated pointer. A correction is a new row, never an edit.
+//
+// Same ledger as `Verification`, discriminated only by `kind`
+// (`deploy` here, `verify` there) — one assertion coordinate space
+// (build, environment, time), two claim types.
 type Deployment struct {
 	// BuildInstanceId The build recorded as deployed. On the CI path this is what
 	// `commit_sha` resolved to — returned so the caller can see
 	// which build its commit resolved to (multiple builds can share
 	// a commit; newest wins). Must already be a registered build
-	// (`registerBuild`).
+	// (`registerBuild`). This is the expectation a keyed verification
+	// compares its observation against.
 	BuildInstanceId string `json:"build_instance_id"`
 
 	// CreatedAt Server-stamped at request time — the sole ordering key for
@@ -601,10 +669,14 @@ type Deployment struct {
 
 	// DeployedBy Who recorded this row, discriminated by prefix: `user:<id>`
 	// for a deployment tagged from the dashboard, or an issuer-scoped
-	// workload identity (`<issuer>:<repository_id>`, e.g.
-	// `github:123456`) for one recorded by `recordDeployment`.
+	// workload identity (`ci:<issuer>:<repository_id>`, e.g.
+	// `ci:github:123456`) for one recorded by `recordDeployment`.
 	// Exactly one cause per row — never both, never neither —
 	// distinguishing a human action from a CI one in the audit trail.
+	//
+	// Rows recorded before this prefix was normalized may carry the
+	// bare issuer form (`github:123456`); readers MUST treat both
+	// forms as the same workload identity shape.
 	DeployedBy string `json:"deployed_by"`
 
 	// Environment Free-text, scoped to this repository (not the organization).
@@ -615,6 +687,9 @@ type Deployment struct {
 	// match this pattern; there is no pre-registration step.
 	Environment string `json:"environment"`
 	Id          int64  `json:"id"`
+
+	// Kind Always `deploy` on this resource.
+	Kind DeploymentKind `json:"kind"`
 
 	// RepositoryId Provider's stable repository identifier, same identity space as `Build.repository_id`.
 	RepositoryId string `json:"repository_id"`
@@ -630,7 +705,17 @@ type Deployment struct {
 	// build, not the run that deployed it. Absent (`null`) on
 	// dashboard-tagged rows, which have no run identity.
 	RunId *string `json:"run_id,omitempty"`
+
+	// Url Where this deployment lives — the absolute URL of the deployed
+	// `build-info.html`, recorded by `recordDeployment`'s optional
+	// `url` field. Null on rows that predate the field or omitted it;
+	// deployment-keyed verification (`getDeployment` → fetch →
+	// compare) is only possible for rows that carry one. HTTPS.
+	Url *string `json:"url,omitempty"`
 }
+
+// DeploymentKind Always `deploy` on this resource.
+type DeploymentKind string
 
 // DeploymentRequest `repository_id` has no field here, mirroring `BuildRegistration`'s
 // token-derived/submitted split — the repository is resolved from
@@ -655,6 +740,13 @@ type DeploymentRequest struct {
 
 	// Environment See `Deployment.environment` for the validation rule.
 	Environment string `json:"environment"`
+
+	// Url Optional. Absolute HTTPS URL of the deployed `build-info.html`
+	// for this deployment — the target a keyed verification will
+	// fetch (`driftmapper verify <deployment-id>`). Omitted rows are
+	// verifiable only by callers that supply their own URL; recording
+	// it is strongly recommended so the handle alone suffices later.
+	Url *string `json:"url,omitempty"`
 }
 
 // DeploymentResponse defines model for DeploymentResponse.
@@ -664,6 +756,10 @@ type DeploymentResponse struct {
 	// `created_at` at request time, so "currently deployed" for an
 	// environment is always the newest row by `created_at`, never a
 	// mutated pointer. A correction is a new row, never an edit.
+	//
+	// Same ledger as `Verification`, discriminated only by `kind`
+	// (`deploy` here, `verify` there) — one assertion coordinate space
+	// (build, environment, time), two claim types.
 	Data Deployment `json:"data"`
 }
 
@@ -1109,24 +1205,38 @@ type UserResponse struct {
 
 // Verification One immutable ledger row: an identity asserted this build was
 // observed live in this environment. Same shape as `Deployment` but a
-// distinct assertion `kind` (`verify`, not `deploy`) — it is an
-// independent claim in the same coordinate space (build, environment,
-// time), never a confirmation of a particular deployment record.
-// Rows are insert-only; "verified" is a read-time comparison of the
-// latest `deploy` vs. latest `verify` claim, and a disagreement is the
-// drift signal, not an error state.
+// distinct assertion `kind` (`verify`, not `deploy`) — one claim type
+// in the same coordinate space (build, environment, time), never a
+// confirmation of one particular deployment record. Rows are
+// insert-only; "verified" is a read-time comparison of the latest
+// `deploy` vs. latest `verify` claim, and a disagreement is the drift
+// signal, not an error state.
+//
+// Since deployment-keyed verification (DRFT-98/DRFT-101) the row also
+// records *how the check went* via `outcome`: what the caller observed
+// at the deployment's URL, including failures to reach or parse it.
+// Rows without those fields predate the fields or come from callers
+// that only attest; treat them as `outcome: verified`.
 type Verification struct {
 	// AssertedBy The identity that made this claim, discriminated by prefix:
 	// `ci:<issuer>:<repository_id>` (e.g. `ci:github:123456`) for a
 	// workload, or `user:<id>` for a human.
 	AssertedBy string `json:"asserted_by"`
 
-	// BuildInstanceId The build asserted as observed live.
+	// BuildInstanceId The build asserted as observed live. For keyed verification
+	// this is the checked deployment's expected build; for a bare
+	// attestation, whatever the caller asserts. Must already be a
+	// registered build (`registerBuild`).
 	BuildInstanceId string `json:"build_instance_id"`
 
 	// CreatedAt Server-stamped at request time — the sole ordering key. Never
 	// client-supplied, same reasoning as `Deployment.created_at`.
 	CreatedAt time.Time `json:"created_at"`
+
+	// DeploymentId The deployment row this check ran against — provenance, not
+	// gating: citing it never blocks or mutates the cited row. Null
+	// on attestations not keyed to a deployment.
+	DeploymentId *int64 `json:"deployment_id,omitempty"`
 
 	// Environment Free-text, scoped to this repository. Must match
 	// `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — same DNS-label rule as
@@ -1136,6 +1246,19 @@ type Verification struct {
 
 	// Kind Always `verify` on this resource.
 	Kind VerificationKind `json:"kind"`
+
+	// ObservedBuildInstanceId What `driftmapper:build-id` actually said in the deployed file's
+	// meta tags. Null unless `outcome` is `verified` or `mismatch`.
+	ObservedBuildInstanceId *string `json:"observed_build_instance_id,omitempty"`
+
+	// Outcome How the check went. `verified` — observed build matches the
+	// expectation. `mismatch` — it differs (the drift signal,
+	// recorded as data). `fetch_failed` — the URL could not be
+	// fetched (unreachable, non-200, TLS/timeout). `parse_failed` —
+	// something was served but carried no usable driftmapper meta
+	// tags (wrong page, unsupported schema version). Absent on legacy
+	// rows: treat as `verified`.
+	Outcome *VerificationOutcome `json:"outcome,omitempty"`
 
 	// RepositoryId The build's **owning** repository's stable provider id — same
 	// identity space as `Build.repository_id`. Always the build's
@@ -1148,37 +1271,84 @@ type Verification struct {
 	// RunId The verifying CI run's `run_id` OIDC claim. Absent (`null`) on
 	// rows with no run identity.
 	RunId *string `json:"run_id,omitempty"`
+
+	// SourceUrl The URL the caller fetched when checking — normally the
+	// deployment's own `url`. Null when nothing was fetched.
+	SourceUrl *string `json:"source_url,omitempty"`
 }
 
 // VerificationKind Always `verify` on this resource.
 type VerificationKind string
 
+// VerificationOutcome How the check went. `verified` — observed build matches the
+// expectation. `mismatch` — it differs (the drift signal,
+// recorded as data). `fetch_failed` — the URL could not be
+// fetched (unreachable, non-200, TLS/timeout). `parse_failed` —
+// something was served but carried no usable driftmapper meta
+// tags (wrong page, unsupported schema version). Absent on legacy
+// rows: treat as `verified`.
+type VerificationOutcome string
+
 // VerificationRequest `repository_id` has no field here, mirroring `DeploymentRequest`'s
 // token-derived/submitted split — the repository is resolved from the
-// verified workload OIDC token, never from the request. Carries
-// `build_instance_id`, not `commit_sha`: unlike a deploy step, the
-// verifying step knows the build-instance ID it is asserting (it read
-// it off the deployed `build-info.html`).
+// verified workload OIDC token, never from the request.
+//
+// The required pair (`build_instance_id`, `environment`) keeps the
+// row in the assertion coordinate space; the optional outcome fields
+// carry what an opinionated caller (`driftmapper verify`) observed.
+// All optional fields are additive — bare attesters that send only
+// the required pair remain fully valid, and servers treat their rows
+// as `outcome: verified`.
 type VerificationRequest struct {
-	// BuildInstanceId The build asserted as observed live. Must be an already-registered
-	// build (`registerBuild`); an unknown ID is a `404` (existence
-	// hiding).
+	// BuildInstanceId For keyed verification, the checked deployment's expected build;
+	// for a bare attestation, the build asserted as observed live.
+	// Must be an already-registered build (`registerBuild`); an
+	// unknown ID is a `404` (existence hiding).
 	BuildInstanceId string `json:"build_instance_id"`
+
+	// DeploymentId Optional. The deployment row this check ran against
+	// (`getDeployment`). Provenance only — never a gate or reference
+	// the server acts on beyond attribution.
+	DeploymentId *int64 `json:"deployment_id,omitempty"`
 
 	// Environment See `Verification.environment` for the validation rule.
 	Environment string `json:"environment"`
+
+	// ObservedBuildInstanceId Optional, null unless a build-id was actually parsed out of the
+	// served file. Required to be non-null when `outcome` is
+	// `verified` or `mismatch`, and null otherwise (server-enforced
+	// once the outcome fields are implemented).
+	ObservedBuildInstanceId *string `json:"observed_build_instance_id,omitempty"`
+
+	// Outcome Optional; defaults to `verified` when omitted (bare attestation).
+	// See `Verification.outcome` for the semantics of each value.
+	Outcome *VerificationRequestOutcome `json:"outcome,omitempty"`
+
+	// SourceUrl Optional. The URL the caller fetched when checking — normally
+	// the deployment's recorded `url`.
+	SourceUrl *string `json:"source_url,omitempty"`
 }
+
+// VerificationRequestOutcome Optional; defaults to `verified` when omitted (bare attestation).
+// See `Verification.outcome` for the semantics of each value.
+type VerificationRequestOutcome string
 
 // VerificationResponse defines model for VerificationResponse.
 type VerificationResponse struct {
 	// Data One immutable ledger row: an identity asserted this build was
 	// observed live in this environment. Same shape as `Deployment` but a
-	// distinct assertion `kind` (`verify`, not `deploy`) — it is an
-	// independent claim in the same coordinate space (build, environment,
-	// time), never a confirmation of a particular deployment record.
-	// Rows are insert-only; "verified" is a read-time comparison of the
-	// latest `deploy` vs. latest `verify` claim, and a disagreement is the
-	// drift signal, not an error state.
+	// distinct assertion `kind` (`verify`, not `deploy`) — one claim type
+	// in the same coordinate space (build, environment, time), never a
+	// confirmation of one particular deployment record. Rows are
+	// insert-only; "verified" is a read-time comparison of the latest
+	// `deploy` vs. latest `verify` claim, and a disagreement is the drift
+	// signal, not an error state.
+	//
+	// Since deployment-keyed verification (DRFT-98/DRFT-101) the row also
+	// records *how the check went* via `outcome`: what the caller observed
+	// at the deployment's URL, including failures to reach or parse it.
+	// Rows without those fields predate the fields or come from callers
+	// that only attest; treat them as `outcome: verified`.
 	Data Verification `json:"data"`
 }
 
@@ -1203,6 +1373,9 @@ type BuildInstanceId = string
 
 // Cursor defines model for Cursor.
 type Cursor = string
+
+// DeploymentId defines model for DeploymentId.
+type DeploymentId = int64
 
 // Limit defines model for Limit.
 type Limit = int

@@ -23,10 +23,11 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **The public tier is four operations: `registerBuild`,
-    `authorizeRepository`, `recordDeployment`, and `recordVerification`.**
+    **The public tier is five operations: `registerBuild`,
+    `authorizeRepository`, `recordDeployment`, `getDeployment`, and
+    `recordVerification`.**
     The CLI is a CI-pipeline tool first — it writes a build and generates an
-    HTML file from the response, and it reads nothing. `authorizeRepository`
+    HTML file from the response. `authorizeRepository`
     is a deliberate exception (spec §4.5): redeeming a challenge to bind a
     repository is itself a write (a policy is created), called from the same
     customer CI the CLI already runs in, with the same permanent version-skew
@@ -35,12 +36,17 @@ info:
     `authorizeRepository` — it is CI-facing by construction
     (`driftmapper deploy` runs in the same CD pipeline the CLI already writes
     builds from), so there was never a dashboard-only period for it to start
-    in. `recordVerification` is the same case as `recordDeployment`: a
-    standalone `driftmapper verify` step asserting that a build was observed
-    live in an environment (its own assertion kind per the Assertion/Binding
-    model, independent of deploy), written from the same customer CI, so it
-    starts public at inception too. Every operation besides these four is
-    `dashboard`.
+    in. `getDeployment` and `recordVerification` complete the pair
+    (DRFT-98/DRFT-101's opinionated verify): verification keys on a
+    deployment — you build an artifact, deploy an artifact, verify a
+    deployment — so `driftmapper verify <deployment-id>` first reads the
+    deployment row (its recorded URL and expected build) via `getDeployment`,
+    fetches that URL itself, parses the deployed `build-info.html` meta tags,
+    compares what it found against the deployment, and records the outcome
+    via `recordVerification`. The read is keyed by a handle the caller
+    already owns, which is what keeps it public-tier-shaped; existence-hiding
+    rules are identical to every other operation here. Every operation
+    besides these five is `dashboard`.
 
     This is deliberately conservative rather than a judgement that these operations
     will never be CLI-facing; a fully featured CLI is an intended later iteration.
@@ -88,8 +94,8 @@ info:
     - `workloadOidc` — a machine principal. The raw OIDC ID token issued by the CI
       provider, presented as a bearer credential. No Driftmapper-issued static token
       exists anywhere in this system (spec §4). This principal reaches exactly the
-      public-tier write operations: `registerBuild`, `authorizeRepository`,
-      `recordDeployment`, and `recordVerification`.
+      public-tier operations: `registerBuild`, `authorizeRepository`,
+      `recordDeployment`, `getDeployment`, and `recordVerification`.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A).
 
@@ -103,7 +109,10 @@ info:
     the moment a CLI read command is intended to run from a developer's machine.
     Note that CLI reads running *in CI* would need no new principal, so if that
     capability is ever split from laptop-side reads, only the latter forces the
-    decision.
+    decision. `getDeployment` is the first such CI-side read: it authenticates
+    with the same workload OIDC token as the writes and is reachable only for
+    deployments the token's repository (or a bound verifier of it) already owns
+    or is authorized to verify.
 
     ## Not described here
 
@@ -142,10 +151,16 @@ tags:
       Assertions in the deploy/verify coordinate space (spec's Slice 7): a
       deploy-mark records which build is currently live in a named
       environment; a verification records an identity asserting a build was
-      observed live in one. Distinct from `builds`, which is
+      observed live in one. Both land in one immutable ledger discriminated
+      only by assertion `kind` — same coordinate space (build, environment,
+      time), same shape. Distinct from `builds`, which is
       registration/lookup of the build artifact itself — both always
-      reference an already-registered build. The two are independent claims
-      in the same space; their read-time comparison is the drift signal.
+      reference an already-registered build. Their read-time comparison is
+      the drift signal. Verification keys on a deployment row: the deploy
+      step optionally records *where* it deployed (`url`), and the verifying
+      step fetches that URL and compares what it finds against what the
+      deployment claims — you build an artifact, deploy an artifact, verify a
+      deployment.
   - name: orgs
     description: |
       Organization membership/switching for the signed-in user — which orgs they
@@ -512,6 +527,14 @@ paths:
         near-duplicate is visible on sight rather than silently split into
         two.
 
+        **`url` (optional) records where this deployment lives** — the
+        absolute URL of the deployed `build-info.html`. It is what makes
+        deployment-keyed verification possible: `driftmapper verify
+        <deployment-id>` fetches this URL and compares the meta tags it
+        finds against this row's build (`getDeployment` + `recordVerification`,
+        DRFT-98/DRFT-101). Omitting it keeps the row verify-able only by
+        explicit-URL callers; recording it is strongly recommended.
+
         **Timing and ordering.** The server stamps `created_at` at request
         time — the client never sends a timestamp. Rows always arrive in
         order; "currently deployed" for an environment is always the row
@@ -581,33 +604,95 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /v1/deployments/{deploymentId}:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentId'
+    get:
+      operationId: getDeployment
+      summary: Fetch one deployment by its ledger row ID
+      description: |
+        The CI-side read half of deployment-keyed verification
+        (`driftmapper verify <deployment-id>`, DRFT-98/DRFT-101): the
+        verifying step knows only the handle its deploy step emitted, and
+        needs what the row carries — the expected `build_instance_id`, the
+        `environment`, and (when recorded) the `url` to fetch.
+
+        Authenticated with a workload OIDC token, exactly like the writes.
+        Authorization mirrors `recordVerification`'s: same-repository rows
+        are readable by the token's own repository; cross-repo verifiers are
+        readable only when an active binding of `kind='verify'` exists for
+        that `(acting_repository_id, target_repository_id)` pair — a read
+        cannot outrun the write it feeds.
+
+        **404s are deliberately indistinguishable**: unknown ID, a
+        deployment belonging to another repository, and a cross-repo row
+        with no verify binding all report the same `not_found` (existence
+        hiding), the same convention every other operation in this API uses.
+      tags: [deployments]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      responses:
+        '200':
+          description: The deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Token is signature-valid but not authorized. `error.code:
+            no_live_policy`, `policy_revoked`, or `claim_mismatch` — the
+            same three cases every other workload-OIDC operation reports for
+            the underlying trusted-workload-policy check.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: |
+            No such deployment, or the caller is not entitled to know it
+            exists — deliberately indistinguishable, as described above.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /v1/verifications:
     post:
       operationId: recordVerification
       summary: Record that a build was verified live in an environment
       description: |
-        Called by the CLI during CD (`driftmapper verify <build-instance-id>
-        -env <name>`), or any CI/CD system able to present the same workload
-        OIDC token used for build registration. Authenticated with a workload
-        OIDC token only — a human session cannot use this endpoint.
+        Called by the CLI during CD (`driftmapper verify <deployment-id>`),
+        or any CI/CD system able to present the same workload OIDC token used
+        for build registration. Authenticated with a workload OIDC token
+        only — a human session cannot use this endpoint.
 
-        **This is a pure write, not a check.** Verification is its own
-        assertion `kind` in the same immutable coordinate space as
-        `recordDeployment` (build, environment, time): this endpoint records
-        that an identity asserts build X was observed live in environment Y.
-        DriftMapper does not itself fetch the environment or compare anything
-        against reality (spec DRFT-27) — "verified" is a read-time comparison
-        of the latest `deploy` vs. latest `verify` claim for a build +
-        environment, and a disagreement between the two *is* the drift signal,
-        not an error state. This call never references, blocks, or retries a
-        `recordDeployment` call — it is independent, on its own schedule.
+        **The caller checks reality; this endpoint records what was found.**
+        Verification keys on a deployment row — you build an artifact, deploy
+        an artifact, verify a deployment. The verifying step resolves the
+        deployment via `getDeployment`, fetches the deployment's recorded URL
+        itself, parses the deployed `build-info.html` meta tags (spec §2.3's
+        contract), compares the observed build-instance ID against the
+        deployment's expected one, and reports here. DriftMapper-the-service
+        still never fetches the environment itself (spec DRFT-27) — the fetch
+        lives in the customer's own CI, which is a strictly better trust
+        position than server-side polling. The outcome fields below record
+        the finding: `outcome: verified` on a match, `mismatch` when the
+        observed build differs from the deployment's expectation (the drift
+        signal, recorded as data rather than rejected), and `fetch_failed` /
+        `parse_failed` when nothing observable could be learned — failed
+        observations are assertions too. Rows stay insert-only immutable
+        claims in the same coordinate space as deploys (build, environment,
+        time); "verified" remains a read-time comparison of the latest
+        claims, and a disagreement between them *is* the signal, not an
+        error state. Citing a deployment never blocks, retries, or mutates
+        it — verification runs on its own schedule, independent of deploy.
 
-        **`build_instance_id` is carried directly** (unlike
-        `recordDeployment`, which carries `commit_sha`): the verifier reads
-        the build-instance ID off the deployed `build-info.html` itself (spec
-        §2.3's meta-tag contract) and passes it as the positional argument, so
-        the server does no commit resolution. The server resolves the build's
-        **owning** repository from the ID, never from the token.
+        **`build_instance_id` names the checked deployment's expected
+        build**; `observed_build_instance_id` carries what the meta tags
+        actually said (null when nothing could be parsed). The server
+        resolves the build's **owning** repository from the ID, never from
+        the token.
 
         **Repository identity comes only from the verified token**, exactly
         like `recordDeployment`: the token's repository must already carry a
@@ -1569,6 +1654,12 @@ components:
       required: true
       schema: { type: string }
       description: Opaque, server-issued build-instance ID.
+    DeploymentId:
+      name: deploymentId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+      description: Assertion-ledger row ID (`Deployment.id`) — the handle a deploy step emits and a verify step keys on.
     OrgSlug:
       name: slug
       in: path
@@ -1893,11 +1984,19 @@ components:
         `created_at` at request time, so "currently deployed" for an
         environment is always the newest row by `created_at`, never a
         mutated pointer. A correction is a new row, never an edit.
-      required: [id, repository_id, environment, build_instance_id, deployed_by, created_at]
+
+        Same ledger as `Verification`, discriminated only by `kind`
+        (`deploy` here, `verify` there) — one assertion coordinate space
+        (build, environment, time), two claim types.
+      required: [id, kind, repository_id, environment, build_instance_id, deployed_by, created_at]
       properties:
         id:
           type: integer
           format: int64
+        kind:
+          type: string
+          enum: [deploy]
+          description: Always `deploy` on this resource.
         repository_id:
           type: string
           description: Provider's stable repository identifier, same identity space as `Build.repository_id`.
@@ -1917,7 +2016,18 @@ components:
             `commit_sha` resolved to — returned so the caller can see
             which build its commit resolved to (multiple builds can share
             a commit; newest wins). Must already be a registered build
-            (`registerBuild`).
+            (`registerBuild`). This is the expectation a keyed verification
+            compares its observation against.
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: |
+            Where this deployment lives — the absolute URL of the deployed
+            `build-info.html`, recorded by `recordDeployment`'s optional
+            `url` field. Null on rows that predate the field or omitted it;
+            deployment-keyed verification (`getDeployment` → fetch →
+            compare) is only possible for rows that carry one. HTTPS.
         run_id:
           type: string
           nullable: true
@@ -1939,10 +2049,14 @@ components:
           description: |
             Who recorded this row, discriminated by prefix: `user:<id>`
             for a deployment tagged from the dashboard, or an issuer-scoped
-            workload identity (`<issuer>:<repository_id>`, e.g.
-            `github:123456`) for one recorded by `recordDeployment`.
+            workload identity (`ci:<issuer>:<repository_id>`, e.g.
+            `ci:github:123456`) for one recorded by `recordDeployment`.
             Exactly one cause per row — never both, never neither —
             distinguishing a human action from a CI one in the audit trail.
+
+            Rows recorded before this prefix was normalized may carry the
+            bare issuer form (`github:123456`); readers MUST treat both
+            forms as the same workload identity shape.
         created_at:
           type: string
           format: date-time
@@ -1989,6 +2103,16 @@ components:
         environment:
           type: string
           description: See `Deployment.environment` for the validation rule.
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: |
+            Optional. Absolute HTTPS URL of the deployed `build-info.html`
+            for this deployment — the target a keyed verification will
+            fetch (`driftmapper verify <deployment-id>`). Omitted rows are
+            verifiable only by callers that supply their own URL; recording
+            it is strongly recommended so the handle alone suffices later.
 
     DeployBuildRequest:
       type: object
@@ -2008,12 +2132,18 @@ components:
       description: |
         One immutable ledger row: an identity asserted this build was
         observed live in this environment. Same shape as `Deployment` but a
-        distinct assertion `kind` (`verify`, not `deploy`) — it is an
-        independent claim in the same coordinate space (build, environment,
-        time), never a confirmation of a particular deployment record.
-        Rows are insert-only; "verified" is a read-time comparison of the
-        latest `deploy` vs. latest `verify` claim, and a disagreement is the
-        drift signal, not an error state.
+        distinct assertion `kind` (`verify`, not `deploy`) — one claim type
+        in the same coordinate space (build, environment, time), never a
+        confirmation of one particular deployment record. Rows are
+        insert-only; "verified" is a read-time comparison of the latest
+        `deploy` vs. latest `verify` claim, and a disagreement is the drift
+        signal, not an error state.
+
+        Since deployment-keyed verification (DRFT-98/DRFT-101) the row also
+        records *how the check went* via `outcome`: what the caller observed
+        at the deployment's URL, including failures to reach or parse it.
+        Rows without those fields predate the fields or come from callers
+        that only attest; treat them as `outcome: verified`.
       required: [id, kind, repository_id, environment, build_instance_id, asserted_by, created_at]
       properties:
         id:
@@ -2037,7 +2167,43 @@ components:
             `Deployment.environment`.
         build_instance_id:
           type: string
-          description: The build asserted as observed live.
+          description: |
+            The build asserted as observed live. For keyed verification
+            this is the checked deployment's expected build; for a bare
+            attestation, whatever the caller asserts. Must already be a
+            registered build (`registerBuild`).
+        deployment_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            The deployment row this check ran against — provenance, not
+            gating: citing it never blocks or mutates the cited row. Null
+            on attestations not keyed to a deployment.
+        source_url:
+          type: string
+          format: uri
+          nullable: true
+          description: |
+            The URL the caller fetched when checking — normally the
+            deployment's own `url`. Null when nothing was fetched.
+        observed_build_instance_id:
+          type: string
+          nullable: true
+          description: |
+            What `driftmapper:build-id` actually said in the deployed file's
+            meta tags. Null unless `outcome` is `verified` or `mismatch`.
+        outcome:
+          type: string
+          enum: [verified, mismatch, fetch_failed, parse_failed]
+          description: |
+            How the check went. `verified` — observed build matches the
+            expectation. `mismatch` — it differs (the drift signal,
+            recorded as data). `fetch_failed` — the URL could not be
+            fetched (unreachable, non-200, TLS/timeout). `parse_failed` —
+            something was served but carried no usable driftmapper meta
+            tags (wrong page, unsupported schema version). Absent on legacy
+            rows: treat as `verified`.
         run_id:
           type: string
           nullable: true
@@ -2072,22 +2238,55 @@ components:
       description: |
         `repository_id` has no field here, mirroring `DeploymentRequest`'s
         token-derived/submitted split — the repository is resolved from the
-        verified workload OIDC token, never from the request. Carries
-        `build_instance_id`, not `commit_sha`: unlike a deploy step, the
-        verifying step knows the build-instance ID it is asserting (it read
-        it off the deployed `build-info.html`).
+        verified workload OIDC token, never from the request.
+
+        The required pair (`build_instance_id`, `environment`) keeps the
+        row in the assertion coordinate space; the optional outcome fields
+        carry what an opinionated caller (`driftmapper verify`) observed.
+        All optional fields are additive — bare attesters that send only
+        the required pair remain fully valid, and servers treat their rows
+        as `outcome: verified`.
       required: [build_instance_id, environment]
       additionalProperties: false
       properties:
         build_instance_id:
           type: string
           description: |
-            The build asserted as observed live. Must be an already-registered
-            build (`registerBuild`); an unknown ID is a `404` (existence
-            hiding).
+            For keyed verification, the checked deployment's expected build;
+            for a bare attestation, the build asserted as observed live.
+            Must be an already-registered build (`registerBuild`); an
+            unknown ID is a `404` (existence hiding).
         environment:
           type: string
           description: See `Verification.environment` for the validation rule.
+        deployment_id:
+          type: integer
+          format: int64
+          description: |
+            Optional. The deployment row this check ran against
+            (`getDeployment`). Provenance only — never a gate or reference
+            the server acts on beyond attribution.
+        source_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: |
+            Optional. The URL the caller fetched when checking — normally
+            the deployment's recorded `url`.
+        observed_build_instance_id:
+          type: string
+          nullable: true
+          description: |
+            Optional, null unless a build-id was actually parsed out of the
+            served file. Required to be non-null when `outcome` is
+            `verified` or `mismatch`, and null otherwise (server-enforced
+            once the outcome fields are implemented).
+        outcome:
+          type: string
+          enum: [verified, mismatch, fetch_failed, parse_failed]
+          description: |
+            Optional; defaults to `verified` when omitted (bare attestation).
+            See `Verification.outcome` for the semantics of each value.
 
     RepositoryAuthorizeRequest:
       type: object
