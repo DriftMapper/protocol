@@ -23,9 +23,9 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **The public tier is five operations: `registerBuild`,
-    `authorizeRepository`, `recordDeployment`, `getCurrentDeployment`, and
-    `recordVerification`.**
+    **The public tier is six operations: `registerBuild`,
+    `authorizeRepository`, `recordDeployment`, `getCurrentDeployment`,
+    `getDeployment`, and `recordVerification`.**
     The CLI is a CI-pipeline tool first — it writes a build and generates an
     HTML file from the response. `authorizeRepository`
     is a deliberate exception (spec §4.5): redeeming a challenge to bind a
@@ -46,8 +46,10 @@ info:
     and records the outcome via `recordVerification`. The read is keyed by a
     name the caller already owns — the environment its own deploy step
     named — which is what keeps it public-tier-shaped; existence-hiding
-    rules are identical to every other operation here. Every operation
-    besides these five is `dashboard`.
+    rules are identical to every other operation here. `getDeployment`
+    remains alongside as the pinned-row read for callers addressing one
+    specific historical claim rather than whatever is currently deployed.
+    Every operation besides these six is `dashboard`.
 
     This is deliberately conservative rather than a judgement that these operations
     will never be CLI-facing; a fully featured CLI is an intended later iteration.
@@ -96,7 +98,8 @@ info:
       provider, presented as a bearer credential. No Driftmapper-issued static token
       exists anywhere in this system (spec §4). This principal reaches exactly the
       public-tier operations: `registerBuild`, `authorizeRepository`,
-      `recordDeployment`, `getCurrentDeployment`, and `recordVerification`.
+      `recordDeployment`, `getCurrentDeployment`, `getDeployment`, and
+      `recordVerification`.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A).
 
@@ -605,6 +608,58 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/deployments/{deploymentId}:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentId'
+    get:
+      operationId: getDeployment
+      summary: Fetch one deployment by its ledger row ID
+      description: |
+        The pinned-row companion to `getCurrentDeployment`: reads one
+        specific ledger row by ID — useful when a caller wants a particular
+        historical claim rather than whatever is currently deployed (audit
+        tooling, verifying a specific rollout).
+
+        Authenticated with a workload OIDC token, exactly like the writes.
+        Authorization mirrors `getCurrentDeployment`'s: same-repository rows
+        are readable by the token's own repository; cross-repo readers need
+        an active binding of `kind='verify'` for that
+        `(acting_repository_id, target_repository_id)` pair — a read
+        cannot outrun the write it feeds.
+
+        **404s are deliberately indistinguishable**: unknown ID, a
+        deployment belonging to another repository, and a cross-repo row
+        with no verify binding all report the same `not_found` (existence
+        hiding), the same convention every other operation in this API uses.
+      tags: [deployments]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      responses:
+        '200':
+          description: The deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Token is signature-valid but not authorized. `error.code:
+            no_live_policy`, `policy_revoked`, or `claim_mismatch` — the
+            same three cases every other workload-OIDC operation reports for
+            the underlying trusted-workload-policy check.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: |
+            No such deployment, or the caller is not entitled to know it
+            exists — deliberately indistinguishable, as described above.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /v1/deployments/current:
     get:
@@ -1675,6 +1730,12 @@ components:
       required: true
       schema: { type: string }
       description: Opaque, server-issued build-instance ID.
+    DeploymentId:
+      name: deploymentId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+      description: Assertion-ledger row ID (`Deployment.id`) — a specific historical claim, addressable directly via `getDeployment`.
     Environment:
       name: env
       in: query

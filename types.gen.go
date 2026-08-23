@@ -1375,6 +1375,9 @@ type BuildInstanceId = string
 // Cursor defines model for Cursor.
 type Cursor = string
 
+// DeploymentId defines model for DeploymentId.
+type DeploymentId = int64
+
 // Environment defines model for Environment.
 type Environment = string
 
