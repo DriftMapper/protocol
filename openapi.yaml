@@ -24,7 +24,7 @@ info:
       NOT published in the public Go module. Free to change without a major version.
 
     **The public tier is five operations: `registerBuild`,
-    `authorizeRepository`, `recordDeployment`, `getDeployment`, and
+    `authorizeRepository`, `recordDeployment`, `getCurrentDeployment`, and
     `recordVerification`.**
     The CLI is a CI-pipeline tool first — it writes a build and generates an
     HTML file from the response. `authorizeRepository`
@@ -36,15 +36,16 @@ info:
     `authorizeRepository` — it is CI-facing by construction
     (`driftmapper deploy` runs in the same CD pipeline the CLI already writes
     builds from), so there was never a dashboard-only period for it to start
-    in. `getDeployment` and `recordVerification` complete the pair
-    (DRFT-98/DRFT-101's opinionated verify): verification keys on a
-    deployment — you build an artifact, deploy an artifact, verify a
-    deployment — so `driftmapper verify <deployment-id>` first reads the
-    deployment row (its recorded URL and expected build) via `getDeployment`,
-    fetches that URL itself, parses the deployed `build-info.html` meta tags,
-    compares what it found against the deployment, and records the outcome
-    via `recordVerification`. The read is keyed by a handle the caller
-    already owns, which is what keeps it public-tier-shaped; existence-hiding
+    in. `getCurrentDeployment` and `recordVerification` complete the pair
+    (DRFT-98/DRFT-101's opinionated verify): verification keys on an
+    environment — you build an artifact, deploy an artifact, verify what's
+    *currently* deployed — so `driftmapper verify <environment>` first reads
+    the current deployment row (its expected build and recorded URL) via
+    `getCurrentDeployment`, fetches that URL itself, parses the deployed
+    `build-info.html` meta tags, compares what it found against that row,
+    and records the outcome via `recordVerification`. The read is keyed by a
+    name the caller already owns — the environment its own deploy step
+    named — which is what keeps it public-tier-shaped; existence-hiding
     rules are identical to every other operation here. Every operation
     besides these five is `dashboard`.
 
@@ -95,7 +96,7 @@ info:
       provider, presented as a bearer credential. No Driftmapper-issued static token
       exists anywhere in this system (spec §4). This principal reaches exactly the
       public-tier operations: `registerBuild`, `authorizeRepository`,
-      `recordDeployment`, `getDeployment`, and `recordVerification`.
+      `recordDeployment`, `getCurrentDeployment`, and `recordVerification`.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A).
 
@@ -109,7 +110,7 @@ info:
     the moment a CLI read command is intended to run from a developer's machine.
     Note that CLI reads running *in CI* would need no new principal, so if that
     capability is ever split from laptop-side reads, only the latter forces the
-    decision. `getDeployment` is the first such CI-side read: it authenticates
+    decision. `getCurrentDeployment` is the first such CI-side read: it authenticates
     with the same workload OIDC token as the writes and is reachable only for
     deployments the token's repository (or a bound verifier of it) already owns
     or is authorized to verify.
@@ -530,10 +531,11 @@ paths:
         **`url` (optional) records where this deployment lives** — the
         absolute URL of the deployed `build-info.html`. It is what makes
         deployment-keyed verification possible: `driftmapper verify
-        <deployment-id>` fetches this URL and compares the meta tags it
-        finds against this row's build (`getDeployment` + `recordVerification`,
-        DRFT-98/DRFT-101). Omitting it keeps the row verify-able only by
-        explicit-URL callers; recording it is strongly recommended.
+        <environment>` fetches this URL and compares the meta tags it
+        finds against this row's build (`getCurrentDeployment` +
+        `recordVerification`, DRFT-98/DRFT-101). Omitting it keeps the row
+        verify-able only by explicit-URL callers; recording it is strongly
+        recommended.
 
         **Timing and ordering.** The server stamps `created_at` at request
         time — the client never sends a timestamp. Rows always arrive in
@@ -604,37 +606,55 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
-  /v1/deployments/{deploymentId}:
-    parameters:
-      - $ref: '#/components/parameters/DeploymentId'
+  /v1/deployments/current:
     get:
-      operationId: getDeployment
-      summary: Fetch one deployment by its ledger row ID
+      operationId: getCurrentDeployment
+      summary: Fetch the deployment currently claimed for an environment
       description: |
         The CI-side read half of deployment-keyed verification
-        (`driftmapper verify <deployment-id>`, DRFT-98/DRFT-101): the
-        verifying step knows only the handle its deploy step emitted, and
-        needs what the row carries — the expected `build_instance_id`, the
-        `environment`, and (when recorded) the `url` to fetch.
+        (`driftmapper verify <environment>`, DRFT-98/DRFT-101): the
+        verifying step knows a constant — an environment name its own
+        deploy step already used — and needs what the *current* deployment
+        row carries: the expected `build_instance_id`, and (when recorded)
+        the `url` to fetch.
+
+        "Currently deployed" is the newest `kind='deploy'` row for
+        `(repository_id, environment)` by `created_at` — never a
+        client-supplied notion of currency. Environments need no
+        pre-registration: a name comes into existence when the first
+        deployment claims it, so an unknown name and a typo'd near-duplicate
+        are indistinguishable from each other here (and from the cross-repo
+        case below); the dashboard's distinct-environment list is where a
+        typo becomes visible on sight.
 
         Authenticated with a workload OIDC token, exactly like the writes.
-        Authorization mirrors `recordVerification`'s: same-repository rows
-        are readable by the token's own repository; cross-repo verifiers are
-        readable only when an active binding of `kind='verify'` exists for
-        that `(acting_repository_id, target_repository_id)` pair — a read
-        cannot outrun the write it feeds.
+        By default the read resolves against the token's own repository.
+        Passing `repo` (`owner/name`) targets another repository's
+        environment and requires an active binding of `kind='verify'` for
+        that `(acting_repository_id, target_repository_id)` pair —
+        independent verification by a separate repository (e.g. an e2e
+        suite asserting after its own checks) is a first-class use case,
+        gated by the same admin-created binding `recordVerification`
+        honors. A read cannot outrun the write it feeds.
 
-        **404s are deliberately indistinguishable**: unknown ID, a
-        deployment belonging to another repository, and a cross-repo row
-        with no verify binding all report the same `not_found` (existence
-        hiding), the same convention every other operation in this API uses.
+        **404s are deliberately indistinguishable**: no rows yet for the
+        environment, a misspelled environment name, an unknown target
+        repository, and a cross-repo request with no verify binding all
+        report the same `not_found` (existence hiding), the same convention
+        every other operation in this API uses.
       tags: [deployments]
       x-stability: public
       security:
         - workloadOidc: []
+      parameters:
+        - $ref: '#/components/parameters/Environment'
+        - $ref: '#/components/parameters/TargetRepository'
       responses:
         '200':
-          description: The deployment.
+          description: |
+            The deployment currently claimed for that environment. `url` is
+            null when the deploy step recorded none — verification then
+            needs the caller to supply the fetch target itself.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeploymentResponse' }
@@ -651,8 +671,8 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '404':
           description: |
-            No such deployment, or the caller is not entitled to know it
-            exists — deliberately indistinguishable, as described above.
+            Nothing verifiable under that coordinate — deliberately
+            indistinguishable, as described above.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -662,15 +682,16 @@ paths:
       operationId: recordVerification
       summary: Record that a build was verified live in an environment
       description: |
-        Called by the CLI during CD (`driftmapper verify <deployment-id>`),
+        Called by the CLI during CD (`driftmapper verify <environment>`),
         or any CI/CD system able to present the same workload OIDC token used
         for build registration. Authenticated with a workload OIDC token
         only — a human session cannot use this endpoint.
 
         **The caller checks reality; this endpoint records what was found.**
-        Verification keys on a deployment row — you build an artifact, deploy
-        an artifact, verify a deployment. The verifying step resolves the
-        deployment via `getDeployment`, fetches the deployment's recorded URL
+        Verification keys on an environment's current deployment — you build
+        an artifact, deploy an artifact, verify what's currently deployed.
+        The verifying step resolves the current deployment via
+        `getCurrentDeployment`, fetches its recorded URL
         itself, parses the deployed `build-info.html` meta tags (spec §2.3's
         contract), compares the observed build-instance ID against the
         deployment's expected one, and reports here. DriftMapper-the-service
@@ -1654,12 +1675,28 @@ components:
       required: true
       schema: { type: string }
       description: Opaque, server-issued build-instance ID.
-    DeploymentId:
-      name: deploymentId
-      in: path
+    Environment:
+      name: env
+      in: query
       required: true
-      schema: { type: integer, format: int64 }
-      description: Assertion-ledger row ID (`Deployment.id`) — the handle a deploy step emits and a verify step keys on.
+      schema:
+        type: string
+        pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+      description: |
+        The deploy-target environment whose current deployment to read — the
+        same free-text, repository-scoped name `recordDeployment` accepted,
+        spelled identically. No pre-registration step exists, so an unknown
+        name is indistinguishable from an empty one (existence hiding).
+    TargetRepository:
+      name: repo
+      in: query
+      schema: { type: string }
+      description: |
+        Optional `owner/name` of another repository whose environment to
+        read — for independent verification by a separate repository (an
+        e2e suite verifying the deployer's environment). Requires an active
+        `kind='verify'` binding; without one, indistinguishable from any
+        other 404. Omit to read the token's own repository.
     OrgSlug:
       name: slug
       in: path
@@ -2026,7 +2063,7 @@ components:
             Where this deployment lives — the absolute URL of the deployed
             `build-info.html`, recorded by `recordDeployment`'s optional
             `url` field. Null on rows that predate the field or omitted it;
-            deployment-keyed verification (`getDeployment` → fetch →
+            deployment-keyed verification (`getCurrentDeployment` → fetch →
             compare) is only possible for rows that carry one. HTTPS.
         run_id:
           type: string
@@ -2110,9 +2147,10 @@ components:
           description: |
             Optional. Absolute HTTPS URL of the deployed `build-info.html`
             for this deployment — the target a keyed verification will
-            fetch (`driftmapper verify <deployment-id>`). Omitted rows are
+            fetch (`driftmapper verify <environment>`). Omitted rows are
             verifiable only by callers that supply their own URL; recording
-            it is strongly recommended so the handle alone suffices later.
+            it is strongly recommended so the environment name alone
+            suffices later.
 
     DeployBuildRequest:
       type: object
@@ -2263,9 +2301,9 @@ components:
           type: integer
           format: int64
           description: |
-            Optional. The deployment row this check ran against
-            (`getDeployment`). Provenance only — never a gate or reference
-            the server acts on beyond attribution.
+            Optional. The deployment row this check ran against (resolved
+            via `getCurrentDeployment`). Provenance only — never a gate or
+            reference the server acts on beyond attribution.
         source_url:
           type: string
           format: uri
