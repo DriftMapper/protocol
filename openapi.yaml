@@ -1990,7 +1990,6 @@ components:
         - workflow
         - built_at
         - registered_at
-        - bound
       properties:
         build_instance_id:
           type: string
@@ -2032,22 +2031,6 @@ components:
             Canonical resolution page for this build — the URL written into
             `build-info.html`. Server-provided so the CLI never constructs it and
             cannot drift from server routing.
-        bound:
-          type: boolean
-          deprecated: true
-          description: |
-            Deprecated (DRFT-84): always `true` as of the release registration started
-            requiring a live trusted-workload policy (DRFT-80) — there is no more unbound
-            state for this field to report. Scheduled for removal after the N-2
-            compatibility window closes (DRFT-85).
-        claim_url:
-          type: string
-          format: uri
-          deprecated: true
-          description: |
-            Deprecated (DRFT-84): always absent as of the same release — `bound` is never
-            `false` anymore, so there is nothing left for this field to point at. Scheduled
-            for removal after the N-2 compatibility window closes (DRFT-85).
         metadata: { $ref: '#/components/schemas/BuildMetadata' }
 
     BuildResponse:

@@ -1,0 +1,10 @@
+DRFT-85: Build.bound/claim_url were marked deprecated in DRFT-84 (shipped
+v0.9.0, 2026-08-21) and are removed here now that the N-2 compatibility
+window has closed — three releases (v0.9.1, v0.10.0, v0.11.0) have shipped
+since, and the CLI's first-ever public npm release (v0.1.0) postdates the
+deprecation, so no installed client anywhere could depend on these fields.
+Server-side, both were already dead/hardcoded since DRFT-80. See DRFT-85 for
+the full compatibility analysis.
+
+POST /v1/builds removed the required property 'data/bound' from the response with the '200' status
+POST /v1/builds removed the required property 'data/bound' from the response with the '201' status

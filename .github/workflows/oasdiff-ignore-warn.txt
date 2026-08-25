@@ -1,0 +1,5 @@
+DRFT-85: Build.claim_url removal — see oasdiff-ignore-err.txt for the full
+rationale (shared with Build.bound's removal in the same change).
+
+POST /v1/builds removed the optional property 'data/claim_url' from the response with the '200' status
+POST /v1/builds removed the optional property 'data/claim_url' from the response with the '201' status

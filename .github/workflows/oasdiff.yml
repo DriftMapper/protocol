@@ -57,10 +57,25 @@ jobs:
           python3 scripts/strip_dashboard_tier.py openapi.yaml revision-public.yaml
           rm base-full.yaml
 
+      # err-ignore/warn-ignore: a small, deliberately narrow escape hatch for
+      # sanctioned removals of fields that were properly deprecated first
+      # (DRFT-84/85 is the first use) — oasdiff's breaking-change checks flag
+      # any property removal as breaking regardless of prior `deprecated:
+      # true` annotation (deprecation is a signal to consumers, not something
+      # that changes whether removal is wire-breaking), so there is no
+      # deprecation-aware flag that makes this pass on its own. Each ignored
+      # line is a literal method+path plus the exact change description
+      # (case-insensitive substring match) — see the files themselves for
+      # what's ignored and why. Add to these files only for a change that
+      # went through the same deprecate-then-remove-after-N-2 process; never
+      # broaden them to a pattern that could swallow an unrelated future
+      # breaking change.
       - uses: oasdiff/oasdiff-action/breaking@v0
         if: steps.prev-tag.outputs.skip == 'false'
         with:
           base: 'base-public.yaml'
           revision: 'revision-public.yaml'
           fail-on: WARN
+          err-ignore: '.github/workflows/oasdiff-ignore-err.txt'
+          warn-ignore: '.github/workflows/oasdiff-ignore-warn.txt'
           github-token: ${{ github.token }}
