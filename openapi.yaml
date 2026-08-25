@@ -174,56 +174,6 @@ tags:
     description: Subscription and checkout.
 
 paths:
-  /v1/auth/token:
-    post:
-      operationId: exchangeToken
-      summary: Redeem a WorkOS authorization code for tokens
-      description: |
-        The second half of the dashboard SPA's PKCE sign-in, and the one part of
-        that flow the browser cannot do itself: WorkOS's own token endpoint
-        (`https://api.workos.com/user_management/authenticate`) sends no CORS
-        headers on its response, so a browser can never read the result directly.
-        This endpoint performs the exchange server-side with the server's WorkOS
-        API key and relays the tokens back.
-
-        Deliberately unauthenticated — it is how a caller becomes authenticated in
-        the first place, so no bearer token exists yet. `code_verifier` (the PKCE
-        proof that this caller is the one that started the flow) is the only
-        credential guarding it, and the authorization code itself is single-use
-        and short-lived at WorkOS: a replay is rejected the same as a wrong
-        verifier.
-
-        Also resolves the local user mirror (creating it on first sign-in), so it
-        exists before the caller's next request rather than racing the first
-        `GET /v1/me`.
-      tags: [auth]
-      x-stability: dashboard
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ExchangeTokenRequest' }
-      responses:
-        '200':
-          description: Exchange succeeded.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ExchangeTokenResponse' }
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          description: |
-            The code was invalid, expired, already redeemed, or did not match
-            `code_verifier` (`error.code: invalid_grant` in every case — WorkOS
-            does not distinguish these to the relying party, and neither does
-            this endpoint).
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-
   /v1/auth/logout:
     post:
       operationId: logout
@@ -1819,44 +1769,6 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   schemas:
-
-    ExchangeTokenRequest:
-      type: object
-      required: [code, code_verifier]
-      additionalProperties: false
-      properties:
-        code:
-          type: string
-          description: Authorization code the SPA's `/callback` route received from WorkOS.
-        code_verifier:
-          type: string
-          description: PKCE verifier matching the challenge sent to WorkOS's `/authorize`.
-
-    WorkosUser:
-      type: object
-      description: |
-        The subset of WorkOS's own user object the dashboard SPA needs, returned
-        straight from token exchange — WorkOS's string user id, not this API's
-        local numeric one (see `User` below). Deliberately not the same shape as
-        `User`: this one is who WorkOS says signed in; `User` is this system's own
-        record, fetched separately at `GET /v1/me` once a session exists.
-      required: [id, email, email_verified]
-      properties:
-        id: { type: string }
-        email: { type: string }
-        email_verified: { type: boolean }
-
-    ExchangeTokenResponse:
-      type: object
-      required: [data]
-      properties:
-        data:
-          type: object
-          required: [access_token, refresh_token, user]
-          properties:
-            access_token: { type: string }
-            refresh_token: { type: string }
-            user: { $ref: '#/components/schemas/WorkosUser' }
 
     User:
       type: object
