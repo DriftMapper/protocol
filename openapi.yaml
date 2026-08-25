@@ -129,7 +129,7 @@ info:
     `BuildPublic` and `Build` schemas below.
 
 servers:
-  - url: https://api.driftmapper.com
+  - url: https://api.driftmapper.io
     description: Production
 
 security:
