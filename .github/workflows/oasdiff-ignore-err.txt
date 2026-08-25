@@ -6,5 +6,5 @@ deprecation, so no installed client anywhere could depend on these fields.
 Server-side, both were already dead/hardcoded since DRFT-80. See DRFT-85 for
 the full compatibility analysis.
 
-POST /v1/builds removed the required property 'data/bound' from the response with the '200' status
-POST /v1/builds removed the required property 'data/bound' from the response with the '201' status
+POST /v1/builds removed the required property `data/bound` from the response with the `200` status
+POST /v1/builds removed the required property `data/bound` from the response with the `201` status
