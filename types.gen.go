@@ -55,66 +55,6 @@ func (e ChallengeIssuedStatus) Valid() bool {
 	}
 }
 
-// Defines values for DeploymentKind.
-const (
-	Deploy DeploymentKind = "deploy"
-)
-
-// Valid indicates whether the value is a known member of the DeploymentKind enum.
-func (e DeploymentKind) Valid() bool {
-	switch e {
-	case Deploy:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for DriftEventType.
-const (
-	BuildIdChanged           DriftEventType = "build_id_changed"
-	IntegrationHealthChanged DriftEventType = "integration_health_changed"
-)
-
-// Valid indicates whether the value is a known member of the DriftEventType enum.
-func (e DriftEventType) Valid() bool {
-	switch e {
-	case BuildIdChanged:
-		return true
-	case IntegrationHealthChanged:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for IntegrationHealth.
-const (
-	Failing           IntegrationHealth = "failing"
-	NeverSucceeded    IntegrationHealth = "never_succeeded"
-	Ok                IntegrationHealth = "ok"
-	Pending           IntegrationHealth = "pending"
-	UnsupportedSchema IntegrationHealth = "unsupported_schema"
-)
-
-// Valid indicates whether the value is a known member of the IntegrationHealth enum.
-func (e IntegrationHealth) Valid() bool {
-	switch e {
-	case Failing:
-		return true
-	case NeverSucceeded:
-		return true
-	case Ok:
-		return true
-	case Pending:
-		return true
-	case UnsupportedSchema:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for MemberWithUserRole.
 const (
 	MemberWithUserRoleAdmin  MemberWithUserRole = "admin"
@@ -244,69 +184,6 @@ const (
 func (e Provider) Valid() bool {
 	switch e {
 	case Github:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for VerificationKind.
-const (
-	Verify VerificationKind = "verify"
-)
-
-// Valid indicates whether the value is a known member of the VerificationKind enum.
-func (e VerificationKind) Valid() bool {
-	switch e {
-	case Verify:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for VerificationOutcome.
-const (
-	VerificationOutcomeFetchFailed VerificationOutcome = "fetch_failed"
-	VerificationOutcomeMismatch    VerificationOutcome = "mismatch"
-	VerificationOutcomeParseFailed VerificationOutcome = "parse_failed"
-	VerificationOutcomeVerified    VerificationOutcome = "verified"
-)
-
-// Valid indicates whether the value is a known member of the VerificationOutcome enum.
-func (e VerificationOutcome) Valid() bool {
-	switch e {
-	case VerificationOutcomeFetchFailed:
-		return true
-	case VerificationOutcomeMismatch:
-		return true
-	case VerificationOutcomeParseFailed:
-		return true
-	case VerificationOutcomeVerified:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for VerificationRequestOutcome.
-const (
-	VerificationRequestOutcomeFetchFailed VerificationRequestOutcome = "fetch_failed"
-	VerificationRequestOutcomeMismatch    VerificationRequestOutcome = "mismatch"
-	VerificationRequestOutcomeParseFailed VerificationRequestOutcome = "parse_failed"
-	VerificationRequestOutcomeVerified    VerificationRequestOutcome = "verified"
-)
-
-// Valid indicates whether the value is a known member of the VerificationRequestOutcome enum.
-func (e VerificationRequestOutcome) Valid() bool {
-	switch e {
-	case VerificationRequestOutcomeFetchFailed:
-		return true
-	case VerificationRequestOutcomeMismatch:
-		return true
-	case VerificationRequestOutcomeParseFailed:
-		return true
-	case VerificationRequestOutcomeVerified:
 		return true
 	default:
 		return false
@@ -621,190 +498,6 @@ type ClaimMismatchDetails struct {
 	MismatchedClaim string `json:"mismatched_claim"`
 }
 
-// DeployBuildRequest `build_instance_id` comes from the URL (`{buildInstanceId}`), not
-// repeated here — the caller is already on that build's resolution
-// page.
-type DeployBuildRequest struct {
-	// Environment See `Deployment.environment` for the validation rule.
-	Environment string `json:"environment"`
-}
-
-// Deployment One immutable ledger row: this build was recorded as deployed to
-// this environment. Rows always arrive in order — the server stamps
-// `created_at` at request time, so "currently deployed" for an
-// environment is always the newest row by `created_at`, never a
-// mutated pointer. A correction is a new row, never an edit.
-//
-// Same ledger as `Verification`, discriminated only by `kind`
-// (`deploy` here, `verify` there) — one assertion coordinate space
-// (build, environment, time), two claim types.
-type Deployment struct {
-	// BuildInstanceId The build recorded as deployed. On the CI path this is what
-	// `commit_sha` resolved to — returned so the caller can see
-	// which build its commit resolved to (multiple builds can share
-	// a commit; newest wins). Must already be a registered build
-	// (`registerBuild`). This is the expectation a keyed verification
-	// compares its observation against.
-	BuildInstanceId string `json:"build_instance_id"`
-
-	// CreatedAt Server-stamped at request time — the sole ordering key for
-	// "currently deployed." Never client-supplied: an out-of-range
-	// client timestamp here would have been a permanent,
-	// uncorrectable corruption of that answer on an insert-only
-	// ledger, so the server stamps it instead of trusting the caller.
-	CreatedAt time.Time `json:"created_at"`
-
-	// DeployedBy Who recorded this row, discriminated by prefix: `user:<id>`
-	// for a deployment tagged from the dashboard, or an issuer-scoped
-	// workload identity (`ci:<issuer>:<repository_id>`, e.g.
-	// `ci:github:123456`) for one recorded by `recordDeployment`.
-	// Exactly one cause per row — never both, never neither —
-	// distinguishing a human action from a CI one in the audit trail.
-	//
-	// Rows recorded before this prefix was normalized may carry the
-	// bare issuer form (`github:123456`); readers MUST treat both
-	// forms as the same workload identity shape.
-	DeployedBy string `json:"deployed_by"`
-
-	// Environment Free-text, scoped to this repository (not the organization).
-	// Must match `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — lowercase
-	// alphanumeric and hyphens, 1-63 characters, starting and ending
-	// with an alphanumeric character (the same shape as a Kubernetes
-	// namespace name). Rejected outright on submission if it doesn't
-	// match this pattern; there is no pre-registration step.
-	Environment string `json:"environment"`
-	Id          int64  `json:"id"`
-
-	// Kind Always `deploy` on this resource.
-	Kind DeploymentKind `json:"kind"`
-
-	// RepositoryId Provider's stable repository identifier, same identity space as `Build.repository_id`.
-	RepositoryId string `json:"repository_id"`
-
-	// RunAttempt The deploy-triggering CI run's `run_attempt` claim — a manual
-	// re-run of the same deploy bumps only this. Distinct from
-	// `Build.run_attempt` for the same reason as `run_id`. Absent
-	// (`null`) on dashboard-tagged rows.
-	RunAttempt *string `json:"run_attempt,omitempty"`
-
-	// RunId The deploy-triggering CI run's `run_id` OIDC claim. Distinct
-	// from `Build.run_id`, which describes the run that produced the
-	// build, not the run that deployed it. Absent (`null`) on
-	// dashboard-tagged rows, which have no run identity.
-	RunId *string `json:"run_id,omitempty"`
-
-	// Url Where this deployment lives — the absolute URL of the deployed
-	// `build-info.html`, recorded by `recordDeployment`'s optional
-	// `url` field. Null on rows that predate the field or omitted it;
-	// deployment-keyed verification (`getCurrentDeployment` → fetch →
-	// compare) is only possible for rows that carry one. HTTPS.
-	Url *string `json:"url,omitempty"`
-}
-
-// DeploymentKind Always `deploy` on this resource.
-type DeploymentKind string
-
-// DeploymentRequest `repository_id` has no field here, mirroring `BuildRegistration`'s
-// token-derived/submitted split — the repository is resolved from
-// the verified workload OIDC token via the same trusted-workload-
-// policy check build registration uses, never from the request.
-//
-// Carries `commit_sha`, not `build_instance_id` — a deploy step
-// generally cannot know the opaque, server-derived build-instance ID
-// (it may live only inside a Docker image layer the deploy job never
-// unpacks, or in a separate CI run's stdout). Every deploy topology,
-// by contrast, knows the commit it is shipping.
-type DeploymentRequest struct {
-	// CommitSha The commit being deployed. The server resolves the newest
-	// registered build for this commit, scoped to the token's
-	// repository — an unknown commit, or one belonging to a
-	// different repository, is a `404` (existence hiding, same
-	// convention as an unknown build-instance ID). A commit with
-	// more than one registered build (a manual re-run bumping
-	// `run_attempt`, or multiple workflows registering the same
-	// commit) resolves to the newest by `registered_at`.
-	CommitSha string `json:"commit_sha"`
-
-	// Environment See `Deployment.environment` for the validation rule.
-	Environment string `json:"environment"`
-
-	// Url Optional. Absolute HTTPS URL of the deployed `build-info.html`
-	// for this deployment — the target a keyed verification will
-	// fetch (`driftmapper verify <environment>`). Omitted rows are
-	// verifiable only by callers that supply their own URL; recording
-	// it is strongly recommended so the environment name alone
-	// suffices later.
-	Url *string `json:"url,omitempty"`
-}
-
-// DeploymentResponse defines model for DeploymentResponse.
-type DeploymentResponse struct {
-	// Data One immutable ledger row: this build was recorded as deployed to
-	// this environment. Rows always arrive in order — the server stamps
-	// `created_at` at request time, so "currently deployed" for an
-	// environment is always the newest row by `created_at`, never a
-	// mutated pointer. A correction is a new row, never an edit.
-	//
-	// Same ledger as `Verification`, discriminated only by `kind`
-	// (`deploy` here, `verify` there) — one assertion coordinate space
-	// (build, environment, time), two claim types.
-	Data Deployment `json:"data"`
-}
-
-// DriftEvent defines model for DriftEvent.
-type DriftEvent struct {
-	CurrentBuildInstanceId *string `json:"current_build_instance_id,omitempty"`
-
-	// CurrentHealth Whether Driftmapper can do its job at this URL — not whether the site is up.
-	//
-	// - `pending` — registered, not yet successfully polled.
-	// - `ok` — last poll parsed a build ID.
-	// - `never_succeeded` — has never once succeeded. Surfaced immediately, since
-	//   this almost always means a setup error, not an outage.
-	// - `failing` — previously succeeded, now failing past the sustained-failure
-	//   threshold.
-	// - `unsupported_schema` — the file was fetched and parsed, but its
-	//   `driftmapper:schema-version` is one this server does not understand. Held
-	//   distinct from `failing` on purpose: it is neither drift nor a fetch error,
-	//   and the remedy is different (upgrade the server or the CLI, not fix the
-	//   deployment).
-	CurrentHealth  *IntegrationHealth `json:"current_health,omitempty"`
-	DriftEventId   string             `json:"drift_event_id"`
-	MonitoredUrlId string             `json:"monitored_url_id"`
-	ObservedAt     time.Time          `json:"observed_at"`
-
-	// PreviousBuildInstanceId Null for the first observation at a URL.
-	PreviousBuildInstanceId *string `json:"previous_build_instance_id,omitempty"`
-
-	// PreviousHealth Whether Driftmapper can do its job at this URL — not whether the site is up.
-	//
-	// - `pending` — registered, not yet successfully polled.
-	// - `ok` — last poll parsed a build ID.
-	// - `never_succeeded` — has never once succeeded. Surfaced immediately, since
-	//   this almost always means a setup error, not an outage.
-	// - `failing` — previously succeeded, now failing past the sustained-failure
-	//   threshold.
-	// - `unsupported_schema` — the file was fetched and parsed, but its
-	//   `driftmapper:schema-version` is one this server does not understand. Held
-	//   distinct from `failing` on purpose: it is neither drift nor a fetch error,
-	//   and the remedy is different (upgrade the server or the CLI, not fix the
-	//   deployment).
-	PreviousHealth *IntegrationHealth `json:"previous_health,omitempty"`
-	RepositoryId   string             `json:"repository_id"`
-	Type           DriftEventType     `json:"type"`
-}
-
-// DriftEventListResponse defines model for DriftEventListResponse.
-type DriftEventListResponse struct {
-	Data struct {
-		Items []DriftEvent `json:"items"`
-		Page  PageInfo     `json:"page"`
-	} `json:"data"`
-}
-
-// DriftEventType defines model for DriftEventType.
-type DriftEventType string
-
 // Error The `error` half of the response envelope (see "Response envelope" above).
 // Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
 // actually emits (`internal/api/respond.go`'s `errorBody`).
@@ -831,21 +524,6 @@ type ErrorEnvelope struct {
 	// actually emits (`internal/api/respond.go`'s `errorBody`).
 	Error Error `json:"error"`
 }
-
-// IntegrationHealth Whether Driftmapper can do its job at this URL — not whether the site is up.
-//
-//   - `pending` — registered, not yet successfully polled.
-//   - `ok` — last poll parsed a build ID.
-//   - `never_succeeded` — has never once succeeded. Surfaced immediately, since
-//     this almost always means a setup error, not an outage.
-//   - `failing` — previously succeeded, now failing past the sustained-failure
-//     threshold.
-//   - `unsupported_schema` — the file was fetched and parsed, but its
-//     `driftmapper:schema-version` is one this server does not understand. Held
-//     distinct from `failing` on purpose: it is neither drift nor a fetch error,
-//     and the remedy is different (upgrade the server or the CLI, not fix the
-//     deployment).
-type IntegrationHealth string
 
 // Invite defines model for Invite.
 type Invite struct {
@@ -889,51 +567,6 @@ type Membership struct {
 
 // MembershipRole defines model for Membership.Role.
 type MembershipRole string
-
-// MonitoredUrl defines model for MonitoredUrl.
-type MonitoredUrl struct {
-	CreatedAt time.Time `json:"created_at"`
-
-	// Health Whether Driftmapper can do its job at this URL — not whether the site is up.
-	//
-	// - `pending` — registered, not yet successfully polled.
-	// - `ok` — last poll parsed a build ID.
-	// - `never_succeeded` — has never once succeeded. Surfaced immediately, since
-	//   this almost always means a setup error, not an outage.
-	// - `failing` — previously succeeded, now failing past the sustained-failure
-	//   threshold.
-	// - `unsupported_schema` — the file was fetched and parsed, but its
-	//   `driftmapper:schema-version` is one this server does not understand. Held
-	//   distinct from `failing` on purpose: it is neither drift nor a fetch error,
-	//   and the remedy is different (upgrade the server or the CLI, not fix the
-	//   deployment).
-	Health IntegrationHealth `json:"health"`
-	Label  *string           `json:"label,omitempty"`
-
-	// LastChangeObservedAt When the build ID at this URL last changed — not when it was last
-	// polled. Poll timestamps are not stored (spec §2.6).
-	LastChangeObservedAt *time.Time `json:"last_change_observed_at,omitempty"`
-
-	// LastSeenBuildInstanceId Most recent build-instance ID parsed at this URL. Null until the first
-	// successful poll.
-	LastSeenBuildInstanceId *string `json:"last_seen_build_instance_id,omitempty"`
-	MonitoredUrlId          string  `json:"monitored_url_id"`
-	RepositoryId            string  `json:"repository_id"`
-	Url                     string  `json:"url"`
-}
-
-// MonitoredUrlListResponse defines model for MonitoredUrlListResponse.
-type MonitoredUrlListResponse struct {
-	Data struct {
-		Items []MonitoredUrl `json:"items"`
-		Page  PageInfo       `json:"page"`
-	} `json:"data"`
-}
-
-// MonitoredUrlResponse defines model for MonitoredUrlResponse.
-type MonitoredUrlResponse struct {
-	Data MonitoredUrl `json:"data"`
-}
 
 // Org defines model for Org.
 type Org struct {
@@ -1167,155 +800,6 @@ type UserResponse struct {
 	Data User `json:"data"`
 }
 
-// Verification One immutable ledger row: an identity asserted this build was
-// observed live in this environment. Same shape as `Deployment` but a
-// distinct assertion `kind` (`verify`, not `deploy`) — one claim type
-// in the same coordinate space (build, environment, time), never a
-// confirmation of one particular deployment record. Rows are
-// insert-only; "verified" is a read-time comparison of the latest
-// `deploy` vs. latest `verify` claim, and a disagreement is the drift
-// signal, not an error state.
-//
-// Since deployment-keyed verification (DRFT-98/DRFT-101) the row also
-// records *how the check went* via `outcome`: what the caller observed
-// at the deployment's URL, including failures to reach or parse it.
-// Rows without those fields predate the fields or come from callers
-// that only attest; treat them as `outcome: verified`.
-type Verification struct {
-	// AssertedBy The identity that made this claim, discriminated by prefix:
-	// `ci:<issuer>:<repository_id>` (e.g. `ci:github:123456`) for a
-	// workload, or `user:<id>` for a human.
-	AssertedBy string `json:"asserted_by"`
-
-	// BuildInstanceId The build asserted as observed live. For keyed verification
-	// this is the checked deployment's expected build; for a bare
-	// attestation, whatever the caller asserts. Must already be a
-	// registered build (`registerBuild`).
-	BuildInstanceId string `json:"build_instance_id"`
-
-	// CreatedAt Server-stamped at request time — the sole ordering key. Never
-	// client-supplied, same reasoning as `Deployment.created_at`.
-	CreatedAt time.Time `json:"created_at"`
-
-	// DeploymentId The deployment row this check ran against — provenance, not
-	// gating: citing it never blocks or mutates the cited row. Null
-	// on attestations not keyed to a deployment.
-	DeploymentId *int64 `json:"deployment_id,omitempty"`
-
-	// Environment Free-text, scoped to this repository. Must match
-	// `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — same DNS-label rule as
-	// `Deployment.environment`.
-	Environment string `json:"environment"`
-	Id          int64  `json:"id"`
-
-	// Kind Always `verify` on this resource.
-	Kind VerificationKind `json:"kind"`
-
-	// ObservedBuildInstanceId What `driftmapper:build-id` actually said in the deployed file's
-	// meta tags. Null unless `outcome` is `verified` or `mismatch`.
-	ObservedBuildInstanceId *string `json:"observed_build_instance_id,omitempty"`
-
-	// Outcome How the check went. `verified` — observed build matches the
-	// expectation. `mismatch` — it differs (the drift signal,
-	// recorded as data). `fetch_failed` — the URL could not be
-	// fetched (unreachable, non-200, TLS/timeout). `parse_failed` —
-	// something was served but carried no usable driftmapper meta
-	// tags (wrong page, unsupported schema version). Absent on legacy
-	// rows: treat as `verified`.
-	Outcome *VerificationOutcome `json:"outcome,omitempty"`
-
-	// RepositoryId The build's **owning** repository's stable provider id — same
-	// identity space as `Build.repository_id`. Always the build's
-	// owner, never the caller's token claim.
-	RepositoryId string `json:"repository_id"`
-
-	// RunAttempt The verifying CI run's `run_attempt` claim.
-	RunAttempt *string `json:"run_attempt,omitempty"`
-
-	// RunId The verifying CI run's `run_id` OIDC claim. Absent (`null`) on
-	// rows with no run identity.
-	RunId *string `json:"run_id,omitempty"`
-
-	// SourceUrl The URL the caller fetched when checking — normally the
-	// deployment's own `url`. Null when nothing was fetched.
-	SourceUrl *string `json:"source_url,omitempty"`
-}
-
-// VerificationKind Always `verify` on this resource.
-type VerificationKind string
-
-// VerificationOutcome How the check went. `verified` — observed build matches the
-// expectation. `mismatch` — it differs (the drift signal,
-// recorded as data). `fetch_failed` — the URL could not be
-// fetched (unreachable, non-200, TLS/timeout). `parse_failed` —
-// something was served but carried no usable driftmapper meta
-// tags (wrong page, unsupported schema version). Absent on legacy
-// rows: treat as `verified`.
-type VerificationOutcome string
-
-// VerificationRequest `repository_id` has no field here, mirroring `DeploymentRequest`'s
-// token-derived/submitted split — the repository is resolved from the
-// verified workload OIDC token, never from the request.
-//
-// The required pair (`build_instance_id`, `environment`) keeps the
-// row in the assertion coordinate space; the optional outcome fields
-// carry what an opinionated caller (`driftmapper verify`) observed.
-// All optional fields are additive — bare attesters that send only
-// the required pair remain fully valid, and servers treat their rows
-// as `outcome: verified`.
-type VerificationRequest struct {
-	// BuildInstanceId For keyed verification, the checked deployment's expected build;
-	// for a bare attestation, the build asserted as observed live.
-	// Must be an already-registered build (`registerBuild`); an
-	// unknown ID is a `404` (existence hiding).
-	BuildInstanceId string `json:"build_instance_id"`
-
-	// DeploymentId Optional. The deployment row this check ran against (resolved
-	// via `getCurrentDeployment`). Provenance only — never a gate or
-	// reference the server acts on beyond attribution.
-	DeploymentId *int64 `json:"deployment_id,omitempty"`
-
-	// Environment See `Verification.environment` for the validation rule.
-	Environment string `json:"environment"`
-
-	// ObservedBuildInstanceId Optional, null unless a build-id was actually parsed out of the
-	// served file. Required to be non-null when `outcome` is
-	// `verified` or `mismatch`, and null otherwise (server-enforced
-	// once the outcome fields are implemented).
-	ObservedBuildInstanceId *string `json:"observed_build_instance_id,omitempty"`
-
-	// Outcome Optional; defaults to `verified` when omitted (bare attestation).
-	// See `Verification.outcome` for the semantics of each value.
-	Outcome *VerificationRequestOutcome `json:"outcome,omitempty"`
-
-	// SourceUrl Optional. The URL the caller fetched when checking — normally
-	// the deployment's recorded `url`.
-	SourceUrl *string `json:"source_url,omitempty"`
-}
-
-// VerificationRequestOutcome Optional; defaults to `verified` when omitted (bare attestation).
-// See `Verification.outcome` for the semantics of each value.
-type VerificationRequestOutcome string
-
-// VerificationResponse defines model for VerificationResponse.
-type VerificationResponse struct {
-	// Data One immutable ledger row: an identity asserted this build was
-	// observed live in this environment. Same shape as `Deployment` but a
-	// distinct assertion `kind` (`verify`, not `deploy`) — one claim type
-	// in the same coordinate space (build, environment, time), never a
-	// confirmation of one particular deployment record. Rows are
-	// insert-only; "verified" is a read-time comparison of the latest
-	// `deploy` vs. latest `verify` claim, and a disagreement is the drift
-	// signal, not an error state.
-	//
-	// Since deployment-keyed verification (DRFT-98/DRFT-101) the row also
-	// records *how the check went* via `outcome`: what the caller observed
-	// at the deployment's URL, including failures to reach or parse it.
-	// Rows without those fields predate the fields or come from callers
-	// that only attest; treat them as `outcome: verified`.
-	Data Verification `json:"data"`
-}
-
 // Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
 // This is what gates the Free tier's public-repo allowance (spec §6A), so it is
 // enforced from the signed token with no VCS API call.
@@ -1327,20 +811,11 @@ type BuildInstanceId = string
 // Cursor defines model for Cursor.
 type Cursor = string
 
-// DeploymentId defines model for DeploymentId.
-type DeploymentId = int64
-
-// Environment defines model for Environment.
-type Environment = string
-
 // Limit defines model for Limit.
 type Limit = int
 
 // OrgSlug defines model for OrgSlug.
 type OrgSlug = string
-
-// TargetRepository defines model for TargetRepository.
-type TargetRepository = string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = ErrorEnvelope
@@ -1374,55 +849,6 @@ type CreateCheckoutSessionJSONBody struct {
 // CreatePortalSessionJSONBody defines parameters for CreatePortalSession.
 type CreatePortalSessionJSONBody struct {
 	ReturnUrl string `json:"return_url"`
-}
-
-// GetCurrentDeploymentParams defines parameters for GetCurrentDeployment.
-type GetCurrentDeploymentParams struct {
-	// Env The deploy-target environment whose current deployment to read — the
-	// same free-text, repository-scoped name `recordDeployment` accepted,
-	// spelled identically. No pre-registration step exists, so an unknown
-	// name is indistinguishable from an empty one (existence hiding).
-	Env Environment `form:"env" json:"env"`
-
-	// Repo Optional `owner/name` of another repository whose environment to
-	// read — for independent verification by a separate repository (an
-	// e2e suite verifying the deployer's environment). Requires an active
-	// `kind='verify'` binding; without one, indistinguishable from any
-	// other 404. Omit to read the token's own repository.
-	Repo *TargetRepository `form:"repo,omitempty" json:"repo,omitempty"`
-}
-
-// ListDriftEventsParams defines parameters for ListDriftEvents.
-type ListDriftEventsParams struct {
-	RepositoryId   *string         `form:"repository_id,omitempty" json:"repository_id,omitempty"`
-	MonitoredUrlId *string         `form:"monitored_url_id,omitempty" json:"monitored_url_id,omitempty"`
-	Type           *DriftEventType `form:"type,omitempty" json:"type,omitempty"`
-	ObservedAfter  *time.Time      `form:"observed_after,omitempty" json:"observed_after,omitempty"`
-
-	// Cursor Opaque cursor from a previous page's `next_cursor`.
-	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-}
-
-// ListMonitoredUrlsParams defines parameters for ListMonitoredUrls.
-type ListMonitoredUrlsParams struct {
-	RepositoryId *string `form:"repository_id,omitempty" json:"repository_id,omitempty"`
-
-	// Cursor Opaque cursor from a previous page's `next_cursor`.
-	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-}
-
-// CreateMonitoredUrlJSONBody defines parameters for CreateMonitoredUrl.
-type CreateMonitoredUrlJSONBody struct {
-	// Label Human label, e.g. "production" or "staging".
-	Label *string `json:"label,omitempty"`
-
-	// RepositoryId Must reference a confirmed repository.
-	RepositoryId string `json:"repository_id"`
-
-	// Url Absolute URL of the deployed `build-info.html`. HTTPS only.
-	Url string `json:"url"`
 }
 
 // CreateOrgJSONBody defines parameters for CreateOrg.
@@ -1485,20 +911,11 @@ type CreatePortalSessionJSONRequestBody CreatePortalSessionJSONBody
 // RegisterBuildJSONRequestBody defines body for RegisterBuild for application/json ContentType.
 type RegisterBuildJSONRequestBody = BuildRegistration
 
-// RecordDeploymentJSONRequestBody defines body for RecordDeployment for application/json ContentType.
-type RecordDeploymentJSONRequestBody = DeploymentRequest
-
-// CreateMonitoredUrlJSONRequestBody defines body for CreateMonitoredUrl for application/json ContentType.
-type CreateMonitoredUrlJSONRequestBody CreateMonitoredUrlJSONBody
-
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody CreateOrgJSONBody
 
 // UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
 type UpdateOrgJSONRequestBody UpdateOrgJSONBody
-
-// RecordDeploymentForBuildJSONRequestBody defines body for RecordDeploymentForBuild for application/json ContentType.
-type RecordDeploymentForBuildJSONRequestBody = DeployBuildRequest
 
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody InviteMemberJSONBody
@@ -1511,6 +928,3 @@ type UpdatePolicyJSONRequestBody = UpdatePolicyRequest
 
 // AuthorizeRepositoryJSONRequestBody defines body for AuthorizeRepository for application/json ContentType.
 type AuthorizeRepositoryJSONRequestBody = RepositoryAuthorizeRequest
-
-// RecordVerificationJSONRequestBody defines body for RecordVerification for application/json ContentType.
-type RecordVerificationJSONRequestBody = VerificationRequest
