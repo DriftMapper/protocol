@@ -57,19 +57,29 @@ jobs:
           python3 scripts/strip_dashboard_tier.py openapi.yaml revision-public.yaml
           rm base-full.yaml
 
-      # err-ignore/warn-ignore: a small, deliberately narrow escape hatch for
-      # sanctioned removals of fields that were properly deprecated first
-      # (DRFT-84/85 is the first use) — oasdiff's breaking-change checks flag
-      # any property removal as breaking regardless of prior `deprecated:
-      # true` annotation (deprecation is a signal to consumers, not something
-      # that changes whether removal is wire-breaking), so there is no
-      # deprecation-aware flag that makes this pass on its own. Each ignored
-      # line is a literal method+path plus the exact change description
-      # (case-insensitive substring match) — see the files themselves for
-      # what's ignored and why. Add to these files only for a change that
-      # went through the same deprecate-then-remove-after-N-2 process; never
-      # broaden them to a pattern that could swallow an unrelated future
-      # breaking change.
+      # err-ignore/warn-ignore: a small, deliberately narrow escape hatch —
+      # oasdiff's breaking-change checks flag any removal as breaking
+      # regardless of prior `deprecated: true` annotation (deprecation is a
+      # signal to consumers, not something that changes whether removal is
+      # wire-breaking), so there is no deprecation-aware flag that makes this
+      # pass on its own. Each ignored line is a literal method+path plus the
+      # exact change description (case-insensitive substring match) — see the
+      # files themselves for what's ignored and why.
+      #
+      # Two, and only two, sanctioned reasons to add a line here:
+      #   1. Deprecate-then-remove-after-N-2 (DRFT-84/85 is the first use):
+      #      the field/operation was marked `deprecated: true` in an earlier
+      #      release, the N-2 window has since closed, and no installed
+      #      client could depend on it anymore.
+      #   2. Pre-launch removal with the same "no installed client could
+      #      depend on this" conclusion, reached without a deprecation cycle
+      #      because the feature is being cut outright, not superseded
+      #      (DRFT-124/126 is the first use) — safe only pre-launch, while
+      #      "no production customers" is still true; stop using this
+      #      justification once that stops holding.
+      # Never broaden either into a pattern that could swallow an unrelated
+      # future breaking change, and never add a line here just because a
+      # removal is inconvenient to gate on.
       - uses: oasdiff/oasdiff-action/breaking@v0
         if: steps.prev-tag.outputs.skip == 'false'
         with:

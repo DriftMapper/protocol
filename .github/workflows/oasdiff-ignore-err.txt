@@ -8,3 +8,21 @@ the full compatibility analysis.
 
 POST /v1/builds removed the required property `data/bound` from the response with the `200` status
 POST /v1/builds removed the required property `data/bound` from the response with the `201` status
+
+DRFT-124/DRFT-126: recordDeployment/recordVerification/getCurrentDeployment/
+getDeployment removed outright, NOT via the deprecate-then-N2 process above —
+see this file's header comment in oasdiff.yml for why that's a deliberate,
+separately-justified exception rather than a broadening of it. Deploy-marking
+and verification (DRFT-88/96/97/98) were scope creep away from the product's
+actual thesis (the build-info file itself, spec §1) and are being cut
+entirely, not superseded. First shipped in a tagged release 2026-08-21
+(v0.9.0), five days before this removal; this is a pre-launch product with no
+production customers, so — same "no installed client could depend on this"
+substance as DRFT-85 above, just without a prior deprecation flag, because
+there was no intent to keep the feature around long enough to warrant one.
+See DRFT-124 for the full decision record.
+
+POST /v1/deployments api path removed without deprecation
+GET /v1/deployments/current api path removed without deprecation
+GET /v1/deployments/{deploymentId} api path removed without deprecation
+POST /v1/verifications api path removed without deprecation
