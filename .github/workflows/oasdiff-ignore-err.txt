@@ -26,3 +26,30 @@ POST /v1/deployments api path removed without deprecation
 GET /v1/deployments/current api path removed without deprecation
 GET /v1/deployments/{deploymentId} api path removed without deprecation
 POST /v1/verifications api path removed without deprecation
+
+DRFT-129: the shared `Build` response schema is loosened (repository_id/
+visibility/ref/workflow become optional) and `BuildMetadata` value maxLength is
+raised 1024→4096, so `POST /v1/builds` responses can (per oasdiff) now omit those
+four fields and carry longer metadata values. This is a deliberate, pre-launch
+spec §2.2a inversion ("confirm, don't derive", DRFT-129) to share one `Build` type
+with the new `registerDeclaredBuild` operation, where a declared build genuinely has
+no linked `repositories` row and thus none of those four fields. The loosening is
+only observable through that new operation: on the existing `registerBuild` path
+every response still carries all four fields (verified builds always do), and a
+pre-DRFT-129 CLI can never receive metadata larger than the bounds its own request
+was validated against (request side is still capped at 50 properties / 1024 per
+value for it). Same "no installed client could depend on the old strictness"
+substance as the removals above, without a deprecation cycle, because the contract
+is relaxed, not removed — safe only pre-launch while the latest tag is still v0.x
+with no production customers. See DRFT-129 for the full decision record.
+
+POST /v1/builds the response property `data/ref` became optional for the status `200`
+POST /v1/builds the response property `data/ref` became optional for the status `201`
+POST /v1/builds the response property `data/repository_id` became optional for the status `200`
+POST /v1/builds the response property `data/repository_id` became optional for the status `201`
+POST /v1/builds the response property `data/visibility` became optional for the status `200`
+POST /v1/builds the response property `data/visibility` became optional for the status `201`
+POST /v1/builds the response property `data/workflow` became optional for the status `200`
+POST /v1/builds the response property `data/workflow` became optional for the status `201`
+POST /v1/builds the `data/metadata/additionalProperties/` response property's maxLength was increased from `1024` to `4096` for the response status `200`
+POST /v1/builds the `data/metadata/additionalProperties/` response property's maxLength was increased from `1024` to `4096` for the response status `201`
