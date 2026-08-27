@@ -73,7 +73,8 @@ info:
       readable string that may be reworded without a version bump; `details` is
       present only for errors with structured, error-specific fields a client
       can act on (e.g. `claim_mismatch`'s `mismatched_claim`/`expected`/
-      `actual` — spec §4.5) and is absent otherwise. See the `Error` schema.
+      `actual` — spec §4.5, or `rate_limited`'s `scope`/`limit`/
+      `retry_after_seconds`) and is absent otherwise. See the `Error` schema.
 
     ## Authentication
 
@@ -381,7 +382,8 @@ paths:
         '429':
           description: |
             `error.code: rate_limited` — too many redemption attempts.
-            Distinct from the per-account challenge-issuance limit.
+            Distinct from the per-account challenge-issuance limit. See
+            `RateLimitDetails` for the `error.details` shape.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -628,7 +630,8 @@ paths:
         '429':
           description: |
             `error.code: rate_limited` — too many challenges issued for this
-            account recently. Distinct from redemption's own rate limit.
+            account recently. Distinct from redemption's own rate limit. See
+            `RateLimitDetails` for the `error.details` shape.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1294,18 +1297,20 @@ components:
       properties:
         data: { $ref: '#/components/schemas/Build' }
 
+    BuildListPayload:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Build' }
+        page: { $ref: '#/components/schemas/PageInfo' }
+
     BuildListResponse:
       type: object
       required: [data]
       properties:
-        data:
-          type: object
-          required: [items, page]
-          properties:
-            items:
-              type: array
-              items: { $ref: '#/components/schemas/Build' }
-            page: { $ref: '#/components/schemas/PageInfo' }
+        data: { $ref: '#/components/schemas/BuildListPayload' }
 
     RepositoryAuthorizeRequest:
       type: object
@@ -1487,18 +1492,20 @@ components:
         latest_build_instance_id: { type: string }
         linked_at: { type: string, format: date-time }
 
+    RepositoryListPayload:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Repository' }
+        page: { $ref: '#/components/schemas/PageInfo' }
+
     RepositoryListResponse:
       type: object
       required: [data]
       properties:
-        data:
-          type: object
-          required: [items, page]
-          properties:
-            items:
-              type: array
-              items: { $ref: '#/components/schemas/Repository' }
-            page: { $ref: '#/components/schemas/PageInfo' }
+        data: { $ref: '#/components/schemas/RepositoryListPayload' }
 
     # Org/OrgWithRole (below) are deliberately distinct from Organization
     # (further below): this pair is the bare membership-list shape behind
@@ -1580,20 +1587,22 @@ components:
         state: { type: string }
         expires_at: { type: string, description: ISO-8601, as reported by WorkOS. }
 
+    OrgMembersPayload:
+      type: object
+      required: [members, invites]
+      properties:
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/MemberWithUser' }
+        invites:
+          type: array
+          items: { $ref: '#/components/schemas/Invite' }
+
     OrgMembersResponse:
       type: object
       required: [data]
       properties:
-        data:
-          type: object
-          required: [members, invites]
-          properties:
-            members:
-              type: array
-              items: { $ref: '#/components/schemas/MemberWithUser' }
-            invites:
-              type: array
-              items: { $ref: '#/components/schemas/Invite' }
+        data: { $ref: '#/components/schemas/OrgMembersPayload' }
 
     InviteResponse:
       type: object
@@ -1639,16 +1648,26 @@ components:
             Stable, machine-readable identity of the error. Clients branch on this,
             never on `message`, which may be reworded without a version bump.
             Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-            `unknown_field`, `claim_mismatch`, `policy_revoked`, `no_live_policy`.
+            `unknown_field`, `claim_mismatch`, `policy_revoked`, `no_live_policy`,
+            `rate_limited`.
         message:
           type: string
           description: Human-readable, safe to display directly.
         details:
           type: object
           description: |
-            Structured, error-specific fields a client can act on programmatically.
-            Present only for errors that have them (currently `claim_mismatch` —
-            see `ClaimMismatchDetails`); absent otherwise.
+            Structured, error-specific fields a client can act on programmatically,
+            shaped per `error.code`. Present only for errors that document a shape;
+            absent otherwise. Two currently do: `claim_mismatch` (see
+            `ClaimMismatchDetails`) and `rate_limited` (see `RateLimitDetails` —
+            emitted generically by the service-layer rate limiter, so it can appear
+            on any operation, not only the ones whose `429` is individually
+            documented above).
+
+            Deliberately not a `oneOf` of the two: `details` is one field shared by
+            every error response, not a per-code branch point, and a new code may
+            add its own shape later without a version bump (this document's
+            additive-within-major rule).
           additionalProperties: true
 
     ErrorEnvelope:
@@ -1683,3 +1702,33 @@ components:
           description: |
             Value from the verified token. Safe to echo: the caller demonstrably
             already holds this token.
+
+    RateLimitDetails:
+      type: object
+      description: |
+        `error.details` shape when `error.code` is `rate_limited`. Emitted
+        generically from the service layer (`internal/api/respond.go`'s
+        `respondServiceError`, matched via `errors.As` against
+        `service.RateLimitError`) rather than by one specific handler, so this
+        can appear on any operation whose 429 response isn't individually
+        documented with its own details shape — see e.g. `redeemChallenge` and
+        `createChallenge` above, which each have their own distinct limit but
+        share this one details shape.
+      required: [scope, limit, retry_after_seconds]
+      properties:
+        scope:
+          type: string
+          description: |
+            Identifies which quota was exceeded (e.g. which limiter matched) —
+            distinguishes this rate limit from any other the same account may
+            be subject to elsewhere.
+        limit:
+          type: integer
+          description: The quota that was exceeded.
+        retry_after_seconds:
+          type: integer
+          description: |
+            Matches the response's `Retry-After` header (RFC 9110 §10.2.3) — a
+            fixed-window counter's true reset could be sooner than a full
+            window, but that's a safe under-promise, never an over-promise a
+            client would retry too early against.
