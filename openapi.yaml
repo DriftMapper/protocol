@@ -62,6 +62,14 @@ info:
     dropping them — silent drops turn a client bug into missing data discovered
     months later.
 
+    Pre-launch only, the additive-only rule admits a narrow set of recorded
+    exceptions, each justified line-by-line in
+    `.github/workflows/oasdiff-ignore-err.txt` rather than silently waved through
+    (DRFT-124/126's operation removals; DRFT-129's loosening of `Build` to share it
+    with the new `registerDeclaredBuild` operation, where the existing `registerBuild`
+    wire behavior is unchanged). Once the product has launched, no new exceptions
+    are sanctioned — see that file's header.
+
     ## Response envelope
 
     Every response is one JSON object with exactly one of `data`/`error` set —
@@ -1380,10 +1388,10 @@ components:
           type: string
           description: Full `owner/name` path. Authenticated tier only.
         visibility:
-          allOf: [{ $ref: '#/components/schemas/Visibility' }]
+          $ref: '#/components/schemas/Visibility'
           description: Present only when `attribution` is `verified` — see `repository_id`.
         provider:
-          allOf: [{ $ref: '#/components/schemas/Provider' }]
+          $ref: '#/components/schemas/Provider'
           description: Present only when `attribution` is `verified` — see `repository_id`.
         commit_sha: { type: string }
         commit_author: { type: string }

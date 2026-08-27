@@ -77,6 +77,14 @@ jobs:
       #      (DRFT-124/126 is the first use) — safe only pre-launch, while
       #      "no production customers" is still true; stop using this
       #      justification once that stops holding.
+      #   3. Pre-launch response-contract loosening (relaxation, not removal)
+      #      where the loosened fields remain always-present on the existing
+      #      operation's actual wire behavior, and the relaxed schema is only
+      #      reachable through a newly added operation no installed client can
+      #      call (DRFT-129 is the first use: `Build` is shared with the new
+      #      `registerDeclaredBuild`, while `registerBuild` responses still
+      #      always carry repository_id/visibility/ref/workflow). Safe only
+      #      pre-launch, same as reason 2 — stop once the product has launched.
       # Never broaden either into a pattern that could swallow an unrelated
       # future breaking change, and never add a line here just because a
       # removal is inconvenient to gate on.
