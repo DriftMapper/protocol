@@ -318,12 +318,15 @@ type Build struct {
 	Workflow   string     `json:"workflow"`
 }
 
+// BuildListPayload defines model for BuildListPayload.
+type BuildListPayload struct {
+	Items []Build  `json:"items"`
+	Page  PageInfo `json:"page"`
+}
+
 // BuildListResponse defines model for BuildListResponse.
 type BuildListResponse struct {
-	Data struct {
-		Items []Build  `json:"items"`
-		Page  PageInfo `json:"page"`
-	} `json:"data"`
+	Data BuildListPayload `json:"data"`
 }
 
 // BuildMetadata Free-form organization-defined fields (owning team, ticket reference,
@@ -505,12 +508,22 @@ type Error struct {
 	// Code Stable, machine-readable identity of the error. Clients branch on this,
 	// never on `message`, which may be reworded without a version bump.
 	// Examples: `validation`, `unauthorized`, `forbidden`, `not_found`,
-	// `unknown_field`, `claim_mismatch`, `policy_revoked`, `no_live_policy`.
+	// `unknown_field`, `claim_mismatch`, `policy_revoked`, `no_live_policy`,
+	// `rate_limited`.
 	Code string `json:"code"`
 
-	// Details Structured, error-specific fields a client can act on programmatically.
-	// Present only for errors that have them (currently `claim_mismatch` —
-	// see `ClaimMismatchDetails`); absent otherwise.
+	// Details Structured, error-specific fields a client can act on programmatically,
+	// shaped per `error.code`. Present only for errors that document a shape;
+	// absent otherwise. Two currently do: `claim_mismatch` (see
+	// `ClaimMismatchDetails`) and `rate_limited` (see `RateLimitDetails` —
+	// emitted generically by the service-layer rate limiter, so it can appear
+	// on any operation, not only the ones whose `429` is individually
+	// documented above).
+	//
+	// Deliberately not a `oneOf` of the two: `details` is one field shared by
+	// every error response, not a per-code branch point, and a new code may
+	// add its own shape later without a version bump (this document's
+	// additive-within-major rule).
 	Details *map[string]interface{} `json:"details,omitempty"`
 
 	// Message Human-readable, safe to display directly.
@@ -584,12 +597,15 @@ type OrgListResponse struct {
 	Data []OrgWithRole `json:"data"`
 }
 
+// OrgMembersPayload defines model for OrgMembersPayload.
+type OrgMembersPayload struct {
+	Invites []Invite         `json:"invites"`
+	Members []MemberWithUser `json:"members"`
+}
+
 // OrgMembersResponse defines model for OrgMembersResponse.
 type OrgMembersResponse struct {
-	Data struct {
-		Invites []Invite         `json:"invites"`
-		Members []MemberWithUser `json:"members"`
-	} `json:"data"`
+	Data OrgMembersPayload `json:"data"`
 }
 
 // OrgResponse defines model for OrgResponse.
@@ -711,6 +727,30 @@ type PolicyWithRepositoryState string
 // `provider`/`claims.Issuer` value on the wire actually contains.
 type Provider string
 
+// RateLimitDetails `error.details` shape when `error.code` is `rate_limited`. Emitted
+// generically from the service layer (`internal/api/respond.go`'s
+// `respondServiceError`, matched via `errors.As` against
+// `service.RateLimitError`) rather than by one specific handler, so this
+// can appear on any operation whose 429 response isn't individually
+// documented with its own details shape — see e.g. `redeemChallenge` and
+// `createChallenge` above, which each have their own distinct limit but
+// share this one details shape.
+type RateLimitDetails struct {
+	// Limit The quota that was exceeded.
+	Limit int `json:"limit"`
+
+	// RetryAfterSeconds Matches the response's `Retry-After` header (RFC 9110 §10.2.3) — a
+	// fixed-window counter's true reset could be sooner than a full
+	// window, but that's a safe under-promise, never an over-promise a
+	// client would retry too early against.
+	RetryAfterSeconds int `json:"retry_after_seconds"`
+
+	// Scope Identifies which quota was exceeded (e.g. which limiter matched) —
+	// distinguishes this rate limit from any other the same account may
+	// be subject to elsewhere.
+	Scope string `json:"scope"`
+}
+
 // Repository defines model for Repository.
 type Repository struct {
 	LatestBuildInstanceId *string   `json:"latest_build_instance_id,omitempty"`
@@ -765,12 +805,15 @@ type RepositoryAuthorizeRequest struct {
 	Challenge string `json:"challenge"`
 }
 
+// RepositoryListPayload defines model for RepositoryListPayload.
+type RepositoryListPayload struct {
+	Items []Repository `json:"items"`
+	Page  PageInfo     `json:"page"`
+}
+
 // RepositoryListResponse defines model for RepositoryListResponse.
 type RepositoryListResponse struct {
-	Data struct {
-		Items []Repository `json:"items"`
-		Page  PageInfo     `json:"page"`
-	} `json:"data"`
+	Data RepositoryListPayload `json:"data"`
 }
 
 // UpdatePolicyRequest Full-replace on the three constrainable dimensions: omit a property
