@@ -7,6 +7,24 @@ import (
 	"time"
 )
 
+// Defines values for BuildAttribution.
+const (
+	Declared BuildAttribution = "declared"
+	Verified BuildAttribution = "verified"
+)
+
+// Valid indicates whether the value is a known member of the BuildAttribution enum.
+func (e BuildAttribution) Valid() bool {
+	switch e {
+	case Declared:
+		return true
+	case Verified:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChallengeStatus.
 const (
 	ChallengeStatusExpired  ChallengeStatus = "expired"
@@ -252,9 +270,21 @@ func (e ChangeMemberRoleJSONBodyRole) Valid() bool {
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
-	// BuildInstanceId Opaque and server-issued. Content-addressed over the tuple documented on
-	// `registerBuild`. Clients MUST treat this as opaque and MUST NOT parse it —
-	// the derivation is an implementation detail that may change.
+	// Attribution `verified`: registered by `registerBuild` with a workload OIDC token
+	// confirming repository identity against the CI provider's own claims —
+	// spec §2.2a/§4's full provenance chain. `declared`: registered by
+	// `registerDeclaredBuild`, a human-authenticated write with
+	// self-reported repository/ref/commit — org-attributed and carrying
+	// exactly the trust level of the rest of this record's fields, not a
+	// provenance claim. Callers that render this record MUST label the
+	// tier rather than implying verification that didn't happen.
+	Attribution BuildAttribution `json:"attribution"`
+
+	// BuildInstanceId Opaque and server-issued. For a `verified` build, content-addressed
+	// over the tuple documented on `registerBuild`; for a `declared` build,
+	// random (there is no run_id/run_attempt to content-address over — spec
+	// §2.5a's tuple only ever applied to the CI producer). Clients MUST
+	// treat this as opaque and MUST NOT parse it either way.
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
 	CommitAuthor    *string   `json:"commit_author,omitempty"`
@@ -279,21 +309,18 @@ type Build struct {
 	// server cannot mechanically enforce.
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
 
-	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
-	// additive registry entries and appear here as new enum members (spec §4.4).
-	// Clients MUST tolerate unknown values in responses.
-	//
-	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
-	// server-side), not a literal "GitHub Actions" spelling — matches what every
-	// `provider`/`claims.Issuer` value on the wire actually contains.
+	// Provider Present only when `attribution` is `verified` — see `repository_id`.
 	Provider     *Provider `json:"provider,omitempty"`
-	Ref          string    `json:"ref"`
+	Ref          *string   `json:"ref,omitempty"`
 	RegisteredAt time.Time `json:"registered_at"`
 
 	// RepositoryId Provider's stable repository identifier. Internal identity is keyed on
-	// this rather than `owner/name`, which changes on rename.
-	RepositoryId   string `json:"repository_id"`
-	RepositoryName string `json:"repository_name"`
+	// this rather than `owner/name`, which changes on rename. Present only
+	// when `attribution` is `verified` — a `declared` build has no linked
+	// `repositories` row, only the self-reported `repository_name`/
+	// `repository_path` below.
+	RepositoryId   *string `json:"repository_id,omitempty"`
+	RepositoryName string  `json:"repository_name"`
 
 	// RepositoryPath Full `owner/name` path. Authenticated tier only.
 	RepositoryPath *string `json:"repository_path,omitempty"`
@@ -311,12 +338,20 @@ type Build struct {
 	RunId        *string `json:"run_id,omitempty"`
 	TriggerEvent *string `json:"trigger_event,omitempty"`
 
-	// Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
-	// This is what gates the Free tier's public-repo allowance (spec §6A), so it is
-	// enforced from the signed token with no VCS API call.
-	Visibility Visibility `json:"visibility"`
-	Workflow   string     `json:"workflow"`
+	// Visibility Present only when `attribution` is `verified` — see `repository_id`.
+	Visibility *Visibility `json:"visibility,omitempty"`
+	Workflow   *string     `json:"workflow,omitempty"`
 }
+
+// BuildAttribution `verified`: registered by `registerBuild` with a workload OIDC token
+// confirming repository identity against the CI provider's own claims —
+// spec §2.2a/§4's full provenance chain. `declared`: registered by
+// `registerDeclaredBuild`, a human-authenticated write with
+// self-reported repository/ref/commit — org-attributed and carrying
+// exactly the trust level of the rest of this record's fields, not a
+// provenance claim. Callers that render this record MUST label the
+// tier rather than implying verification that didn't happen.
+type BuildAttribution string
 
 // BuildListPayload defines model for BuildListPayload.
 type BuildListPayload struct {
@@ -364,8 +399,24 @@ type BuildPublic struct {
 	RepositoryName string `json:"repository_name"`
 }
 
-// BuildRegistration Only fields the OIDC token cannot attest to. Everything derivable from
-// verified claims is server-derived and rejected here (spec §2.2a).
+// BuildRegistration Shared by both `registerBuild` (workload OIDC) and `registerDeclaredBuild`
+// (human session) — DRFT-129 inverts spec §2.2a's original "token-derived,
+// never from the body" rule to "confirm, don't derive." The CLI now reads
+// git directly and submits its own view of build identity on every
+// registration, for both producers.
+//
+// On `registerBuild`, `repository` is optional (omitting it is still valid,
+// for backward compatibility with CLI versions predating this field) but
+// when present is *confirmed* against the workload OIDC token's verified
+// repository claim and rejected with `claim_mismatch` on any difference —
+// it is never trusted from the body alone on that path, and the stored
+// build is still attributed to the claims-derived repository, not the
+// submitted one. `ref` on that path is informational only; the token's own
+// `ref` claim remains authoritative.
+//
+// On `registerDeclaredBuild` there is no token to confirm against:
+// `repository` is required, self-reported, and is exactly what gets
+// stored — see `Build.attribution`.
 type BuildRegistration struct {
 	BuiltAt time.Time `json:"built_at"`
 
@@ -391,6 +442,15 @@ type BuildRegistration struct {
 	// RE2 engine cannot compile, so encoding it here would produce a schema the
 	// server cannot mechanically enforce.
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
+
+	// Ref Git ref, e.g. `refs/heads/main`. Read directly from git by the CLI
+	// (`internal/gitcontext`). Informational on `registerBuild`; the only
+	// source of truth on `registerDeclaredBuild`.
+	Ref *string `json:"ref,omitempty"`
+
+	// Repository `owner/name`. See this schema's own description for how the two
+	// registration operations treat this field differently.
+	Repository *string `json:"repository,omitempty"`
 
 	// TriggerEvent Normalized trigger, e.g. `push`, `pull_request`, `manual`.
 	TriggerEvent *string `json:"trigger_event,omitempty"`
@@ -918,6 +978,14 @@ type ListBuildsParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// RegisterDeclaredBuildParams defines parameters for RegisterDeclaredBuild.
+type RegisterDeclaredBuildParams struct {
+	// IdempotencyKey Caller-generated, unique per build-registration attempt. The CLI
+	// mints one per invocation and never reuses it across distinct
+	// builds.
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // InviteMemberJSONBody defines parameters for InviteMember.
 type InviteMemberJSONBody struct {
 	Email string                   `json:"email"`
@@ -959,6 +1027,9 @@ type CreateOrgJSONRequestBody CreateOrgJSONBody
 
 // UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
 type UpdateOrgJSONRequestBody UpdateOrgJSONBody
+
+// RegisterDeclaredBuildJSONRequestBody defines body for RegisterDeclaredBuild for application/json ContentType.
+type RegisterDeclaredBuildJSONRequestBody = BuildRegistration
 
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody InviteMemberJSONBody
