@@ -9,15 +9,14 @@ build's identity, today or years from now — so it gets the same documented,
 versioned treatment.
 
 Reference implementation: `driftmapper/cli`'s `internal/buildinfo` package
-(`Generate` writes this shape; `Parse`, added with DRFT-98's opinionated
-verify, reads it). `driftmapper verify <environment>` is this format's
-first first-party consumer — it fetches a deployed copy, parses the meta
-tags, and records what it found. Third-party tooling (synthetic
-monitoring, uptime checks — see this org's "feed existing tools instead of
-building a monitoring platform" decision) remains a primary audience.
-This document is the contract; `internal/buildinfo` is one conforming
-producer and parser of it, not the source of truth for what any parser is
-allowed to assume.
+(`Generate` writes this shape; `Parse` reads it) — this format is the
+product (DRFT-124), not a byproduct of a verification feature, so both
+halves ship and are maintained regardless of what else the CLI does.
+Third-party tooling (synthetic monitoring, uptime checks, a future
+`driftmapper probe <url>` — see DRFT-131) is the primary audience for
+`Parse`. This document is the contract; `internal/buildinfo` is one
+conforming producer and parser of it, not the source of truth for what any
+parser is allowed to assume.
 
 ## Contract vs. presentation
 

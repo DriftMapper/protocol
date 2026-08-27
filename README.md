@@ -26,11 +26,8 @@ require a major version bump and are gated in CI (see below).
 Every operation in `openapi.yaml` declares `x-stability`:
 
 - `public` — the CLI-facing contract. Semver'd and covered by the N-2
-  compatibility window above. These are `registerBuild`,
-  `authorizeRepository`, `recordDeployment`, `getCurrentDeployment`,
-  `getDeployment`, and `recordVerification` (the primary read: keyed by an
-  environment name the caller's own deploy step minted, per DRFT-98;
-  `getDeployment` is its pinned-row companion).
+  compatibility window above. These are exactly `registerBuild` and
+  `authorizeRepository`.
 - `dashboard` — consumed only by the first-party dashboard SPA, which
   deploys in lockstep with the server. Free to change without a major
   version bump.
