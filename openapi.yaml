@@ -334,11 +334,12 @@ paths:
         itself, only a real CI token can (spec §4.5).
 
         In one atomic transaction: verifies the token, looks up the challenge
-        by its presented value, resolves the issuing org, checks that org's
-        plan slot, creates a trusted-workload policy from the **token's**
-        claims (never the request body), and burns the challenge. All of it
-        commits or none does — there is no window in which a challenge is
-        consumed without a resulting policy, or vice versa.
+        by its presented value, resolves the issuing org, creates a
+        trusted-workload policy from the **token's** claims (never the
+        request body), and burns the challenge. All of it commits or none
+        does — there is no window in which a challenge is consumed without a
+        resulting policy, or vice versa. Repository binding is unlimited and
+        unmetered on every plan (DRFT-72/117) — there is no plan check here.
 
         **Repository identity comes only from the verified token.** The
         request carries nothing but the challenge value itself.
@@ -374,13 +375,6 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '402':
-          description: |
-            The issuing org's plan slot is exhausted. `error.code:
-            upgrade_required` — actionable, names the limit.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403':
           description: |
             `error.code: invalid_challenge` — the challenge is unusable, for
@@ -1034,81 +1028,6 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /v1/billing/checkout-session:
-    post:
-      operationId: createCheckoutSession
-      summary: Create a Stripe Checkout session
-      description: |
-        Returns a URL to redirect the browser to. Checkout itself is browser-native
-        and is not reachable from the CLI (spec §5.2a).
-      tags: [billing]
-      x-stability: dashboard
-      security:
-        - userSession: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [plan, return_url]
-              properties:
-                plan:
-                  $ref: '#/components/schemas/Plan'
-                return_url:
-                  type: string
-                  format: uri
-      responses:
-        '201':
-          description: Session created.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data:
-                    type: object
-                    required: [checkout_url]
-                    properties:
-                      checkout_url: { type: string, format: uri }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v1/billing/portal-session:
-    post:
-      operationId: createPortalSession
-      summary: Create a Stripe billing-portal session
-      tags: [billing]
-      x-stability: dashboard
-      security:
-        - userSession: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [return_url]
-              properties:
-                return_url: { type: string, format: uri }
-      responses:
-        '201':
-          description: Session created.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data:
-                    type: object
-                    required: [portal_url]
-                    properties:
-                      portal_url: { type: string, format: uri }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
 components:
 
   securitySchemes:
@@ -1229,14 +1148,21 @@ components:
 
     Plan:
       type: string
-      enum: [free, paid, enterprise]
+      description: |
+        Solo is free and capped at one org member; Team is a flat price with no
+        member cap; Enterprise is a fixed higher price with an SSO entitlement
+        and no self-serve checkout — provisioned by an operator moving the
+        subscription to an Enterprise price in the Stripe dashboard (DRFT-117,
+        supersedes the earlier free/paid/enterprise naming and DRFT-72's
+        per-seat pricing).
+      enum: [solo, team, enterprise]
 
     Visibility:
       type: string
       description: |
         Derived from the `repository_visibility` OIDC claim, never client-supplied.
-        This is what gates the Free tier's public-repo allowance (spec §6A), so it is
-        enforced from the signed token with no VCS API call.
+        Repository binding is unlimited and unmetered on every plan (DRFT-72/117);
+        this claim has no billing role.
       enum: [public, private, internal]
 
     BuildMetadata:
