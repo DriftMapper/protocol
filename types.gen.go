@@ -139,8 +139,8 @@ func (e OrgWithRoleRole) Valid() bool {
 // Defines values for Plan.
 const (
 	Enterprise Plan = "enterprise"
-	Free       Plan = "free"
-	Paid       Plan = "paid"
+	Solo       Plan = "solo"
+	Team       Plan = "team"
 )
 
 // Valid indicates whether the value is a known member of the Plan enum.
@@ -148,9 +148,9 @@ func (e Plan) Valid() bool {
 	switch e {
 	case Enterprise:
 		return true
-	case Free:
+	case Solo:
 		return true
-	case Paid:
+	case Team:
 		return true
 	default:
 		return false
@@ -694,8 +694,15 @@ type OrgWithRoleRole string
 type Organization struct {
 	Name           string `json:"name"`
 	OrganizationId string `json:"organization_id"`
-	Plan           Plan   `json:"plan"`
-	SsoEnforced    *bool  `json:"sso_enforced,omitempty"`
+
+	// Plan Solo is free and capped at one org member; Team is a flat price with no
+	// member cap; Enterprise is a fixed higher price with an SSO entitlement
+	// and no self-serve checkout — provisioned by an operator moving the
+	// subscription to an Enterprise price in the Stripe dashboard (DRFT-117,
+	// supersedes the earlier free/paid/enterprise naming and DRFT-72's
+	// per-seat pricing).
+	Plan        Plan  `json:"plan"`
+	SsoEnforced *bool `json:"sso_enforced,omitempty"`
 }
 
 // OrganizationResponse defines model for OrganizationResponse.
@@ -711,7 +718,12 @@ type PageInfo struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
-// Plan defines model for Plan.
+// Plan Solo is free and capped at one org member; Team is a flat price with no
+// member cap; Enterprise is a fixed higher price with an SSO entitlement
+// and no self-serve checkout — provisioned by an operator moving the
+// subscription to an Enterprise price in the Stripe dashboard (DRFT-117,
+// supersedes the earlier free/paid/enterprise naming and DRFT-72's
+// per-seat pricing).
 type Plan string
 
 // Policy defines model for Policy.
@@ -830,8 +842,8 @@ type Repository struct {
 	RepositoryId string   `json:"repository_id"`
 
 	// Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
-	// This is what gates the Free tier's public-repo allowance (spec §6A), so it is
-	// enforced from the signed token with no VCS API call.
+	// Repository binding is unlimited and unmetered on every plan (DRFT-72/117);
+	// this claim has no billing role.
 	Visibility Visibility `json:"visibility"`
 }
 
@@ -904,8 +916,8 @@ type UserResponse struct {
 }
 
 // Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
-// This is what gates the Free tier's public-repo allowance (spec §6A), so it is
-// enforced from the signed token with no VCS API call.
+// Repository binding is unlimited and unmetered on every plan (DRFT-72/117);
+// this claim has no billing role.
 type Visibility string
 
 // BuildInstanceId defines model for BuildInstanceId.
@@ -941,17 +953,6 @@ type UnprocessableEntity = ErrorEnvelope
 // UpdateEmailNotificationsJSONBody defines parameters for UpdateEmailNotifications.
 type UpdateEmailNotificationsJSONBody struct {
 	Enabled bool `json:"enabled"`
-}
-
-// CreateCheckoutSessionJSONBody defines parameters for CreateCheckoutSession.
-type CreateCheckoutSessionJSONBody struct {
-	Plan      Plan   `json:"plan"`
-	ReturnUrl string `json:"return_url"`
-}
-
-// CreatePortalSessionJSONBody defines parameters for CreatePortalSession.
-type CreatePortalSessionJSONBody struct {
-	ReturnUrl string `json:"return_url"`
 }
 
 // CreateOrgJSONBody defines parameters for CreateOrg.
@@ -1012,12 +1013,6 @@ type ListReposParams struct {
 
 // UpdateEmailNotificationsJSONRequestBody defines body for UpdateEmailNotifications for application/json ContentType.
 type UpdateEmailNotificationsJSONRequestBody UpdateEmailNotificationsJSONBody
-
-// CreateCheckoutSessionJSONRequestBody defines body for CreateCheckoutSession for application/json ContentType.
-type CreateCheckoutSessionJSONRequestBody CreateCheckoutSessionJSONBody
-
-// CreatePortalSessionJSONRequestBody defines body for CreatePortalSession for application/json ContentType.
-type CreatePortalSessionJSONRequestBody CreatePortalSessionJSONBody
 
 // RegisterBuildJSONRequestBody defines body for RegisterBuild for application/json ContentType.
 type RegisterBuildJSONRequestBody = BuildRegistration
