@@ -229,6 +229,24 @@ func (e Visibility) Valid() bool {
 	}
 }
 
+// Defines values for StartOrgCheckoutJSONBodyInterval.
+const (
+	Annual  StartOrgCheckoutJSONBodyInterval = "annual"
+	Monthly StartOrgCheckoutJSONBodyInterval = "monthly"
+)
+
+// Valid indicates whether the value is a known member of the StartOrgCheckoutJSONBodyInterval enum.
+func (e StartOrgCheckoutJSONBodyInterval) Valid() bool {
+	switch e {
+	case Annual:
+		return true
+	case Monthly:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for InviteMemberJSONBodyRole.
 const (
 	InviteMemberJSONBodyRoleAdmin  InviteMemberJSONBodyRole = "admin"
@@ -539,6 +557,14 @@ type ChallengeListResponse struct {
 	Data []Challenge `json:"data"`
 }
 
+// CheckoutSessionResponse defines model for CheckoutSessionResponse.
+type CheckoutSessionResponse struct {
+	Data struct {
+		// Url Hosted Stripe Checkout URL — navigate the whole page here, never render it in-app.
+		Url string `json:"url"`
+	} `json:"data"`
+}
+
 // ClaimMismatchDetails `error.details` shape when `error.code` is `claim_mismatch`: a signature-
 // valid token whose claims did not satisfy the repository's authorization
 // policy.
@@ -692,8 +718,26 @@ type OrgWithRoleRole string
 
 // Organization defines model for Organization.
 type Organization struct {
+	// BillingEnabled Whether this environment has Stripe configured at all. False in
+	// local/test environments with no STRIPE_SECRET_KEY — a client
+	// should hide upgrade/manage-subscription UI entirely rather than
+	// show it and have every action 404.
+	BillingEnabled *bool `json:"billing_enabled,omitempty"`
+
+	// HasAnnual Whether an annual Team price is configured, so a client knows
+	// whether to offer an annual billing-interval option at all.
+	HasAnnual *bool `json:"has_annual,omitempty"`
+
+	// IsPaid True once this org has an active (non-Solo) subscription.
+	IsPaid         *bool  `json:"is_paid,omitempty"`
 	Name           string `json:"name"`
 	OrganizationId string `json:"organization_id"`
+
+	// OverMemberLimit True when the org has more members than its current plan allows
+	// (a Team org whose subscription lapsed, dropping it back to
+	// Solo's one-member cap). Existing members keep access; only new
+	// invites are blocked. Never blocks reads.
+	OverMemberLimit *bool `json:"over_member_limit,omitempty"`
 
 	// Plan Solo is free and capped at one org member; Team is a flat price with no
 	// member cap; Enterprise is a fixed higher price with an SSO entitlement
@@ -789,6 +833,14 @@ type PolicyWithRepository struct {
 
 // PolicyWithRepositoryState defines model for PolicyWithRepository.State.
 type PolicyWithRepositoryState string
+
+// PortalSessionResponse defines model for PortalSessionResponse.
+type PortalSessionResponse struct {
+	Data struct {
+		// Url Hosted Stripe Customer Portal URL — navigate the whole page here, never render it in-app.
+		Url string `json:"url"`
+	} `json:"data"`
+}
 
 // Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 // additive registry entries and appear here as new enum members (spec §4.4).
@@ -965,6 +1017,15 @@ type UpdateOrgJSONBody struct {
 	Name string `json:"name"`
 }
 
+// StartOrgCheckoutJSONBody defines parameters for StartOrgCheckout.
+type StartOrgCheckoutJSONBody struct {
+	// Interval Defaults to monthly when omitted.
+	Interval *StartOrgCheckoutJSONBodyInterval `json:"interval,omitempty"`
+}
+
+// StartOrgCheckoutJSONBodyInterval defines parameters for StartOrgCheckout.
+type StartOrgCheckoutJSONBodyInterval string
+
 // ListBuildsParams defines parameters for ListBuilds.
 type ListBuildsParams struct {
 	// RepositoryId Filter to one repository.
@@ -1022,6 +1083,9 @@ type CreateOrgJSONRequestBody CreateOrgJSONBody
 
 // UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
 type UpdateOrgJSONRequestBody UpdateOrgJSONBody
+
+// StartOrgCheckoutJSONRequestBody defines body for StartOrgCheckout for application/json ContentType.
+type StartOrgCheckoutJSONRequestBody StartOrgCheckoutJSONBody
 
 // RegisterDeclaredBuildJSONRequestBody defines body for RegisterDeclaredBuild for application/json ContentType.
 type RegisterDeclaredBuildJSONRequestBody = BuildRegistration

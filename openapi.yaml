@@ -1028,6 +1028,102 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/orgs/{slug}/billing/checkout:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    post:
+      operationId: startOrgCheckout
+      summary: Start a Stripe Checkout session to upgrade to Team
+      description: |
+        Always upgrades to Team — there is no plan parameter here for a
+        forged request to target Enterprise (spec: Enterprise is
+        operator-provisioned only, never self-serve). Returns a hosted
+        Stripe Checkout URL; the caller does a full-page navigation to it,
+        never an in-app render. The org's plan does not change on return
+        from this URL — only the Stripe webhook (out of band) is
+        authoritative, so a client should treat a fresh return as
+        "processing" until it observes `is_paid` flip via `getOrganization`.
+
+        DRFT-135 (PR 2): reverses DRFT-117's original decision to keep
+        checkout server-rendered-only in `cmd/hub` — see that ticket for the
+        reasoning. `cmd/hub`'s equivalent SSR route is gone once this ships.
+      tags: [billing]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                interval:
+                  type: string
+                  enum: [monthly, annual]
+                  description: Defaults to monthly when omitted.
+      responses:
+        '200':
+          description: Hosted Stripe Checkout session created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutSessionResponse' }
+        '400':
+          description: |
+            No such plan/interval is priced (e.g. annual billing isn't
+            configured in this environment).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Billing is not configured in this environment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/orgs/{slug}/billing/portal:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    post:
+      operationId: startOrgPortal
+      summary: Start a Stripe Customer Portal session
+      description: |
+        Opens the hosted Stripe Customer Portal so an owner can manage,
+        change, or cancel the org's subscription. Same reversal of DRFT-117
+        as `startOrgCheckout` above — see that operation's description.
+      tags: [billing]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Hosted Stripe Customer Portal session created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PortalSessionResponse' }
+        '400':
+          description: |
+            The org has never checked out — there is no Stripe customer to
+            open a portal session for. A client should route to
+            `startOrgCheckout` instead; this is not expected to be reachable
+            from the dashboard SPA, which only shows "Manage subscription"
+            when `is_paid` is already true.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Billing is not configured in this environment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
 components:
 
   securitySchemes:
@@ -1671,6 +1767,52 @@ components:
         name: { type: string }
         plan: { $ref: '#/components/schemas/Plan' }
         sso_enforced: { type: boolean }
+        billing_enabled:
+          type: boolean
+          description: |
+            Whether this environment has Stripe configured at all. False in
+            local/test environments with no STRIPE_SECRET_KEY — a client
+            should hide upgrade/manage-subscription UI entirely rather than
+            show it and have every action 404.
+        is_paid:
+          type: boolean
+          description: True once this org has an active (non-Solo) subscription.
+        over_member_limit:
+          type: boolean
+          description: |
+            True when the org has more members than its current plan allows
+            (a Team org whose subscription lapsed, dropping it back to
+            Solo's one-member cap). Existing members keep access; only new
+            invites are blocked. Never blocks reads.
+        has_annual:
+          type: boolean
+          description: |
+            Whether an annual Team price is configured, so a client knows
+            whether to offer an annual billing-interval option at all.
+
+    CheckoutSessionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [url]
+          properties:
+            url:
+              type: string
+              description: Hosted Stripe Checkout URL — navigate the whole page here, never render it in-app.
+
+    PortalSessionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [url]
+          properties:
+            url:
+              type: string
+              description: Hosted Stripe Customer Portal URL — navigate the whole page here, never render it in-app.
 
     OrganizationResponse:
       type: object
