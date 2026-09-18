@@ -7,6 +7,51 @@ import (
 	"time"
 )
 
+// Defines values for AdminResetOrgPlanAction.
+const (
+	Delete AdminResetOrgPlanAction = "delete"
+	Skip   AdminResetOrgPlanAction = "skip"
+	Unlink AdminResetOrgPlanAction = "unlink"
+)
+
+// Valid indicates whether the value is a known member of the AdminResetOrgPlanAction enum.
+func (e AdminResetOrgPlanAction) Valid() bool {
+	switch e {
+	case Delete:
+		return true
+	case Skip:
+		return true
+	case Unlink:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminResetStepStatus.
+const (
+	Failed       AdminResetStepStatus = "failed"
+	NotAttempted AdminResetStepStatus = "not_attempted"
+	Ok           AdminResetStepStatus = "ok"
+	Skipped      AdminResetStepStatus = "skipped"
+)
+
+// Valid indicates whether the value is a known member of the AdminResetStepStatus enum.
+func (e AdminResetStepStatus) Valid() bool {
+	switch e {
+	case Failed:
+		return true
+	case NotAttempted:
+		return true
+	case Ok:
+		return true
+	case Skipped:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for BuildAttribution.
 const (
 	Declared BuildAttribution = "declared"
@@ -285,6 +330,89 @@ func (e ChangeMemberRoleJSONBodyRole) Valid() bool {
 		return false
 	}
 }
+
+// AdminResetOrgPlan One org's planned treatment within an `AdminResetPlan`.
+type AdminResetOrgPlan struct {
+	// Action `delete` removes the org entirely; `unlink` removes only this
+	// user's membership; `skip` blocks the *entire* reset — see
+	// `AdminResetPlan.blocked`.
+	Action       AdminResetOrgPlanAction `json:"action"`
+	MembershipId *string                 `json:"membership_id,omitempty"`
+
+	// OrgId Null when this org has no local mirror row.
+	OrgId    *int64 `json:"org_id,omitempty"`
+	Personal bool   `json:"personal"`
+
+	// Reason Human-readable explanation, always set.
+	Reason               string  `json:"reason"`
+	Slug                 *string `json:"slug,omitempty"`
+	StripeCustomerId     *string `json:"stripe_customer_id,omitempty"`
+	StripeSubscriptionId *string `json:"stripe_subscription_id,omitempty"`
+	WorkosOrgId          string  `json:"workos_org_id"`
+}
+
+// AdminResetOrgPlanAction `delete` removes the org entirely; `unlink` removes only this
+// user's membership; `skip` blocks the *entire* reset — see
+// `AdminResetPlan.blocked`.
+type AdminResetOrgPlanAction string
+
+// AdminResetPlan `adminPlanUserReset`'s full output — everything
+// `adminExecuteUserReset` needs, and everything an operator should
+// review before executing.
+type AdminResetPlan struct {
+	// Blocked True when at least one org's action is `skip` — `adminExecuteUserReset`
+	// refuses to run at all in that case.
+	Blocked bool   `json:"blocked"`
+	Email   string `json:"email"`
+
+	// LocalUserId Null when there is no local mirror row for this email.
+	LocalUserId *int64              `json:"local_user_id,omitempty"`
+	Orgs        []AdminResetOrgPlan `json:"orgs"`
+
+	// WorkosUserId Empty when there is no WorkOS user for this email.
+	WorkosUserId *string `json:"workos_user_id,omitempty"`
+}
+
+// AdminResetPlanResponse defines model for AdminResetPlanResponse.
+type AdminResetPlanResponse struct {
+	// Data `adminPlanUserReset`'s full output — everything
+	// `adminExecuteUserReset` needs, and everything an operator should
+	// review before executing.
+	Data AdminResetPlan `json:"data"`
+}
+
+// AdminResetReport `adminExecuteUserReset`'s full, ordered audit trail — everything an
+// operator needs to see exactly what succeeded, what failed, and what
+// wasn't reached.
+type AdminResetReport struct {
+	// Failed True if any step's status is `failed`.
+	Failed bool             `json:"failed"`
+	Steps  []AdminResetStep `json:"steps"`
+}
+
+// AdminResetReportResponse defines model for AdminResetReportResponse.
+type AdminResetReportResponse struct {
+	// Data `adminExecuteUserReset`'s full, ordered audit trail — everything an
+	// operator needs to see exactly what succeeded, what failed, and what
+	// wasn't reached.
+	Data AdminResetReport `json:"data"`
+}
+
+// AdminResetStep One action `adminExecuteUserReset` took, or didn't reach.
+type AdminResetStep struct {
+	Description string  `json:"description"`
+	Error       *string `json:"error,omitempty"`
+
+	// Status `skipped` is an idempotent no-op (already gone). `not_attempted`
+	// means execution stopped at an earlier failed step before reaching
+	// this one.
+	Status AdminResetStepStatus `json:"status"`
+}
+
+// AdminResetStepStatus `skipped` is an idempotent no-op (already gone). `not_attempted`
+// means execution stopped at an earlier failed step before reaching
+// this one.
+type AdminResetStepStatus string
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
@@ -1007,6 +1135,18 @@ type UpdateEmailNotificationsJSONBody struct {
 	Enabled bool `json:"enabled"`
 }
 
+// AdminExecuteUserResetJSONBody defines parameters for AdminExecuteUserReset.
+type AdminExecuteUserResetJSONBody struct {
+	// Confirm Must equal `email`, required on every call.
+	Confirm string `json:"confirm"`
+	Email   string `json:"email"`
+}
+
+// AdminPlanUserResetJSONBody defines parameters for AdminPlanUserReset.
+type AdminPlanUserResetJSONBody struct {
+	Email string `json:"email"`
+}
+
 // CreateOrgJSONBody defines parameters for CreateOrg.
 type CreateOrgJSONBody struct {
 	Name string `json:"name"`
@@ -1074,6 +1214,12 @@ type ListReposParams struct {
 
 // UpdateEmailNotificationsJSONRequestBody defines body for UpdateEmailNotifications for application/json ContentType.
 type UpdateEmailNotificationsJSONRequestBody UpdateEmailNotificationsJSONBody
+
+// AdminExecuteUserResetJSONRequestBody defines body for AdminExecuteUserReset for application/json ContentType.
+type AdminExecuteUserResetJSONRequestBody AdminExecuteUserResetJSONBody
+
+// AdminPlanUserResetJSONRequestBody defines body for AdminPlanUserReset for application/json ContentType.
+type AdminPlanUserResetJSONRequestBody AdminPlanUserResetJSONBody
 
 // RegisterBuildJSONRequestBody defines body for RegisterBuild for application/json ContentType.
 type RegisterBuildJSONRequestBody = BuildRegistration

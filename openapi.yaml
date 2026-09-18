@@ -142,6 +142,16 @@ tags:
       already-resolved org's plan.
   - name: billing
     description: Subscription and checkout.
+  - name: admin
+    description: |
+      Platform-operator-only tooling, gated on `users.is_platform_admin`
+      (never org-scoped — see `Forbidden` below, which for these operations
+      means "not a platform admin," not "not a member of this org"). Backs
+      `cmd/admin`, the thin CLI client that replaced direct DB/WorkOS/Stripe
+      access with these bearer endpoints. Publishing the shape here is safe
+      and consistent with every other sensitive `dashboard`-tier operation
+      (org delete, billing, invites) — the security boundary is authn+authz,
+      never obscurity.
 
 paths:
   /v1/auth/logout:
@@ -1124,6 +1134,103 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
+  /v1/admin/users/reset-plan:
+    post:
+      operationId: adminPlanUserReset
+      summary: Preview tearing a user down across Postgres, WorkOS, and Stripe
+      description: |
+        Platform-admin only (`users.is_platform_admin`; see the `admin` tag
+        description). Always recomputes fresh from live state — never accepts
+        a client-supplied plan — so there is no staleness/replay gap between
+        an operator's dry-run and a later `adminExecuteUserReset` call.
+        Read-only: builds and returns the plan, changes nothing.
+      tags: [admin]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+      responses:
+        '200':
+          description: The computed reset plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminResetPlanResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/users/reset:
+    post:
+      operationId: adminExecuteUserReset
+      summary: Tear a user down across Postgres, WorkOS, and Stripe
+      description: |
+        Platform-admin only (`users.is_platform_admin`; see the `admin` tag
+        description). `confirm` must equal `email` on every call — there is
+        no "is this prod" signal left to conditionally require it on, since a
+        deployed `cmd/api` instance simply *is* one environment; the
+        equivalent guard is now which URL the operator's shell pointed
+        `cmd/admin` at, not a flag.
+
+        Internally re-plans from live state, then executes in one request —
+        same staleness-avoidance reason as `adminPlanUserReset`. A plan that
+        is blocked (the user is the sole owner of a shared org with other
+        members) is refused before any step runs: `422` with
+        `error.code: reset_blocked` and `error.details.orgs` naming the
+        blocking org(s).
+
+        Returns `200` with the full step-by-step report **even when some
+        steps failed** — `data.failed` carries that; the HTTP status answers
+        "did the server process this request," not "did every step
+        succeed." External systems (Stripe, WorkOS) are always acted on
+        before the local database, so a failure at any point leaves the
+        local database fully intact and the whole operation safe to retry.
+      tags: [admin]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, confirm]
+              properties:
+                email: { type: string }
+                confirm:
+                  type: string
+                  description: Must equal `email`, required on every call.
+      responses:
+        '200':
+          description: |
+            The execution report. Check `data.failed` — a `200` does not by
+            itself mean every step succeeded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminResetReportResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: |
+            Either `confirm` did not equal `email` (`error.code:
+            confirm_mismatch`), or the reset is blocked (`error.code:
+            reset_blocked`, `error.details.orgs` names the blocking org(s)) —
+            in both cases nothing was executed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
 components:
 
   securitySchemes:
@@ -1819,6 +1926,101 @@ components:
       required: [data]
       properties:
         data: { $ref: '#/components/schemas/Organization' }
+
+    AdminResetOrgPlan:
+      type: object
+      description: One org's planned treatment within an `AdminResetPlan`.
+      required: [workos_org_id, personal, action, reason]
+      properties:
+        org_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Null when this org has no local mirror row.
+        workos_org_id: { type: string }
+        slug: { type: string }
+        personal: { type: boolean }
+        action:
+          type: string
+          enum: [delete, unlink, skip]
+          description: |
+            `delete` removes the org entirely; `unlink` removes only this
+            user's membership; `skip` blocks the *entire* reset — see
+            `AdminResetPlan.blocked`.
+        reason:
+          type: string
+          description: Human-readable explanation, always set.
+        membership_id: { type: string }
+        stripe_customer_id: { type: string }
+        stripe_subscription_id: { type: string }
+
+    AdminResetPlan:
+      type: object
+      description: |
+        `adminPlanUserReset`'s full output — everything
+        `adminExecuteUserReset` needs, and everything an operator should
+        review before executing.
+      required: [email, orgs, blocked]
+      properties:
+        email: { type: string }
+        local_user_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Null when there is no local mirror row for this email.
+        workos_user_id:
+          type: string
+          description: Empty when there is no WorkOS user for this email.
+        orgs:
+          type: array
+          items: { $ref: '#/components/schemas/AdminResetOrgPlan' }
+        blocked:
+          type: boolean
+          description: |
+            True when at least one org's action is `skip` — `adminExecuteUserReset`
+            refuses to run at all in that case.
+
+    AdminResetPlanResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AdminResetPlan' }
+
+    AdminResetStep:
+      type: object
+      description: One action `adminExecuteUserReset` took, or didn't reach.
+      required: [description, status]
+      properties:
+        description: { type: string }
+        status:
+          type: string
+          enum: [ok, skipped, failed, not_attempted]
+          description: |
+            `skipped` is an idempotent no-op (already gone). `not_attempted`
+            means execution stopped at an earlier failed step before reaching
+            this one.
+        error: { type: string }
+
+    AdminResetReport:
+      type: object
+      description: |
+        `adminExecuteUserReset`'s full, ordered audit trail — everything an
+        operator needs to see exactly what succeeded, what failed, and what
+        wasn't reached.
+      required: [steps, failed]
+      properties:
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/AdminResetStep' }
+        failed:
+          type: boolean
+          description: True if any step's status is `failed`.
+
+    AdminResetReportResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AdminResetReport' }
 
     PageInfo:
       type: object
