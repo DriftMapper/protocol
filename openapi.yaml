@@ -695,16 +695,28 @@ paths:
 
         Admin+ only, same bar as inviting a member: issuing a challenge is a
         setup action that can bind a new repository to this org.
+
+        The request body is optional: an empty body (or `{}`) issues an
+        unnamed challenge, as before. A `name` is a human label only — it
+        distinguishes concurrently-live challenges in the dashboard list and
+        plays no part in redemption or authorization.
       tags: [repos]
       x-stability: dashboard
       security:
         - userSession: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateChallengeRequest' }
       responses:
         '201':
           description: Challenge issued.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChallengeIssuedResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -728,13 +740,21 @@ paths:
         raw value**, issued or not; that's `createChallenge`'s one-time
         response only. Member+, matching read access to every other
         onboarding-adjacent list in this API.
+
+        Cursor-paginated like `listRepos`, newest first, and every lifecycle
+        state is included (live, redeemed, revoked, expired), so the set grows
+        without bound over an org's lifetime — page through it rather than
+        assuming one response is complete.
       tags: [repos]
       x-stability: dashboard
       security:
         - userSession: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
       responses:
         '200':
-          description: The organization's challenges, newest first.
+          description: A page of the organization's challenges, newest first.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChallengeListResponse' }
@@ -1615,6 +1635,13 @@ components:
         id:
           type: integer
           format: int64
+        name:
+          type: string
+          maxLength: 80
+          description: |
+            Optional human label supplied at `createChallenge` time. Absent for
+            challenges issued without one. Display-only — never an
+            authorization input.
         status:
           type: string
           enum: [live, redeemed, revoked, expired]
@@ -1664,13 +1691,34 @@ components:
       properties:
         data: { $ref: '#/components/schemas/ChallengeIssued' }
 
+    ChallengeListPayload:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Challenge' }
+        page: { $ref: '#/components/schemas/PageInfo' }
+
     ChallengeListResponse:
       type: object
       required: [data]
       properties:
-        data:
-          type: array
-          items: { $ref: '#/components/schemas/Challenge' }
+        data: { $ref: '#/components/schemas/ChallengeListPayload' }
+
+    CreateChallengeRequest:
+      type: object
+      description: |
+        Optional body for `createChallenge`. Every field is optional so the
+        pre-existing empty-body call shape keeps working unchanged.
+      properties:
+        name:
+          type: string
+          maxLength: 80
+          description: |
+            Human label for the challenge. The server trims surrounding
+            whitespace and treats an empty result as "no name". Over 80
+            characters (after trimming) is a 400 validation error.
 
     # --- Policy lifecycle (DRFT-63) ---------------------------------------
     #
