@@ -1673,6 +1673,17 @@ components:
         redeemed_at:
           type: string
           format: date-time
+        repository_path:
+          type: string
+          description: |
+            `owner/repo` of the repository this challenge bound when it was
+            redeemed. Present only on a `redeemed` challenge returned by
+            `listChallenges`; absent on every other status and on
+            `createChallenge`'s response. Resolved from the binding the
+            redemption created, so it stays accurate for challenges redeemed
+            before this field existed. It names the repository the challenge
+            bound at the time — the binding may since have been revoked (see
+            `listPolicies` for current state).
         expires_at:
           type: string
           format: date-time
