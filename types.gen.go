@@ -736,7 +736,8 @@ type ClaimMismatchDetails struct {
 type CreateChallengeRequest struct {
 	// Name Human label for the challenge. The server trims surrounding
 	// whitespace and treats an empty result as "no name". Over 80
-	// characters (after trimming) is a 400 validation error.
+	// characters (after trimming), or any control character, is a 422
+	// validation error.
 	Name *string `json:"name,omitempty"`
 }
 
