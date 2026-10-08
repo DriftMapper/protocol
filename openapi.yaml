@@ -716,13 +716,23 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ChallengeIssuedResponse' }
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Malformed JSON request body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: |
+            `error.code: validation` — the `name` is longer than 80 characters
+            or contains control characters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429':
           description: |
             `error.code: rate_limited` — too many challenges issued for this
@@ -1718,7 +1728,8 @@ components:
           description: |
             Human label for the challenge. The server trims surrounding
             whitespace and treats an empty result as "no name". Over 80
-            characters (after trimming) is a 400 validation error.
+            characters (after trimming), or any control character, is a 422
+            validation error.
 
     # --- Policy lifecycle (DRFT-63) ---------------------------------------
     #
