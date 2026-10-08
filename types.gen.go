@@ -618,8 +618,13 @@ type Challenge struct {
 
 	// MaxAttempts The cap `attempts` is counted against — past this, redemption
 	// rejects the challenge outright regardless of `status`/`expires_at`.
-	MaxAttempts int        `json:"max_attempts"`
-	RedeemedAt  *time.Time `json:"redeemed_at,omitempty"`
+	MaxAttempts int `json:"max_attempts"`
+
+	// Name Optional human label supplied at `createChallenge` time. Absent for
+	// challenges issued without one. Display-only — never an
+	// authorization input.
+	Name       *string    `json:"name,omitempty"`
+	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
 
 	// Status Derived, not stored — see `model.Challenge.State()`. Does not
 	// reflect the attempt cap: a challenge that has hit `max_attempts`
@@ -648,8 +653,13 @@ type ChallengeIssued struct {
 
 	// MaxAttempts The cap `attempts` is counted against — past this, redemption
 	// rejects the challenge outright regardless of `status`/`expires_at`.
-	MaxAttempts int        `json:"max_attempts"`
-	RedeemedAt  *time.Time `json:"redeemed_at,omitempty"`
+	MaxAttempts int `json:"max_attempts"`
+
+	// Name Optional human label supplied at `createChallenge` time. Absent for
+	// challenges issued without one. Display-only — never an
+	// authorization input.
+	Name       *string    `json:"name,omitempty"`
+	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
 
 	// Status Derived, not stored — see `model.Challenge.State()`. Does not
 	// reflect the attempt cap: a challenge that has hit `max_attempts`
@@ -680,9 +690,15 @@ type ChallengeIssuedResponse struct {
 	Data ChallengeIssued `json:"data"`
 }
 
+// ChallengeListPayload defines model for ChallengeListPayload.
+type ChallengeListPayload struct {
+	Items []Challenge `json:"items"`
+	Page  PageInfo    `json:"page"`
+}
+
 // ChallengeListResponse defines model for ChallengeListResponse.
 type ChallengeListResponse struct {
-	Data []Challenge `json:"data"`
+	Data ChallengeListPayload `json:"data"`
 }
 
 // CheckoutSessionResponse defines model for CheckoutSessionResponse.
@@ -713,6 +729,15 @@ type ClaimMismatchDetails struct {
 
 	// MismatchedClaim e.g. `workflow`, `ref`, `environment`.
 	MismatchedClaim string `json:"mismatched_claim"`
+}
+
+// CreateChallengeRequest Optional body for `createChallenge`. Every field is optional so the
+// pre-existing empty-body call shape keeps working unchanged.
+type CreateChallengeRequest struct {
+	// Name Human label for the challenge. The server trims surrounding
+	// whitespace and treats an empty result as "no name". Over 80
+	// characters (after trimming) is a 400 validation error.
+	Name *string `json:"name,omitempty"`
 }
 
 // Error The `error` half of the response envelope (see "Response envelope" above).
@@ -1188,6 +1213,13 @@ type RegisterDeclaredBuildParams struct {
 	IdempotencyKey string `json:"Idempotency-Key"`
 }
 
+// ListChallengesParams defines parameters for ListChallenges.
+type ListChallengesParams struct {
+	// Cursor Opaque cursor from a previous page's `next_cursor`.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // InviteMemberJSONBody defines parameters for InviteMember.
 type InviteMemberJSONBody struct {
 	Email string                   `json:"email"`
@@ -1235,6 +1267,9 @@ type StartOrgCheckoutJSONRequestBody StartOrgCheckoutJSONBody
 
 // RegisterDeclaredBuildJSONRequestBody defines body for RegisterDeclaredBuild for application/json ContentType.
 type RegisterDeclaredBuildJSONRequestBody = BuildRegistration
+
+// CreateChallengeJSONRequestBody defines body for CreateChallenge for application/json ContentType.
+type CreateChallengeJSONRequestBody = CreateChallengeRequest
 
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody InviteMemberJSONBody
