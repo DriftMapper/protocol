@@ -626,6 +626,16 @@ type Challenge struct {
 	Name       *string    `json:"name,omitempty"`
 	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
 
+	// RepositoryPath `owner/repo` of the repository this challenge bound when it was
+	// redeemed. Present only on a `redeemed` challenge returned by
+	// `listChallenges`; absent on every other status and on
+	// `createChallenge`'s response. Resolved from the binding the
+	// redemption created, so it stays accurate for challenges redeemed
+	// before this field existed. It names the repository the challenge
+	// bound at the time — the binding may since have been revoked (see
+	// `listPolicies` for current state).
+	RepositoryPath *string `json:"repository_path,omitempty"`
+
 	// Status Derived, not stored — see `model.Challenge.State()`. Does not
 	// reflect the attempt cap: a challenge that has hit `max_attempts`
 	// still reports `live` here until it also expires or is revoked
@@ -660,6 +670,16 @@ type ChallengeIssued struct {
 	// authorization input.
 	Name       *string    `json:"name,omitempty"`
 	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
+
+	// RepositoryPath `owner/repo` of the repository this challenge bound when it was
+	// redeemed. Present only on a `redeemed` challenge returned by
+	// `listChallenges`; absent on every other status and on
+	// `createChallenge`'s response. Resolved from the binding the
+	// redemption created, so it stays accurate for challenges redeemed
+	// before this field existed. It names the repository the challenge
+	// bound at the time — the binding may since have been revoked (see
+	// `listPolicies` for current state).
+	RepositoryPath *string `json:"repository_path,omitempty"`
 
 	// Status Derived, not stored — see `model.Challenge.State()`. Does not
 	// reflect the attempt cap: a challenge that has hit `max_attempts`
