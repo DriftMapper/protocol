@@ -23,17 +23,19 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **The public tier is exactly three operations: `registerBuild`,
-    `registerDeclaredBuild`, and `authorizeRepository`.** The CLI is a
-    CI-pipeline tool first — it writes a build and generates an HTML file
-    from the response. `authorizeRepository` is a deliberate exception
-    (spec §4.5): redeeming a challenge to bind a repository is itself a
-    write (a policy is created), called from the same customer CI the CLI
-    already runs in, with the same permanent version-skew exposure as build
-    registration. `registerDeclaredBuild` (DRFT-124/DRFT-129) is the CLI's
-    other producer — a human-authenticated write from a laptop with no CI at
-    all, pinned in exactly the same way as CI-triggered registration. Every
-    other operation is `dashboard`.
+    **The public tier is exactly two operations: `registerBuild` and
+    `authorizeRepository`.** The CLI is a CI-pipeline tool — it writes a build
+    and generates an HTML file from the response. `authorizeRepository` is a
+    deliberate exception (spec §4.5): redeeming a challenge to bind a
+    repository is itself a write (a policy is created), called from the same
+    customer CI the CLI already runs in, with the same permanent version-skew
+    exposure as build registration. Every other operation is `dashboard`.
+
+    Every registered build comes from a CI pipeline: the CI provider's OIDC
+    token is the only credential that can register one (DRFT-165 removed the
+    person-registered `registerDeclaredBuild`, which put unproven repository
+    names beside proven ones). A build no trusted pipeline produced is simply
+    not registered.
 
     (DRFT-124 removed the deploy-marking/verification operations —
     `recordDeployment`, `getCurrentDeployment`, `getDeployment`,
@@ -66,9 +68,10 @@ info:
     exceptions, each justified line-by-line in
     `.github/workflows/oasdiff-ignore-err.txt` rather than silently waved through
     (DRFT-124/126's operation removals; DRFT-129's loosening of `Build` to share it
-    with the new `registerDeclaredBuild` operation, where the existing `registerBuild`
-    wire behavior is unchanged). Once the product has launched, no new exceptions
-    are sanctioned — see that file's header.
+    with `registerDeclaredBuild`, and DRFT-165's removal of that operation and
+    re-tightening of `Build`, where the `registerBuild` wire behavior is unchanged).
+    Once the product has launched, no new exceptions are sanctioned — see that
+    file's header.
 
     ## Response envelope
 
@@ -97,15 +100,13 @@ info:
       exists anywhere in this system (spec §4). This principal reaches exactly the
       `registerBuild` and `authorizeRepository` operations.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
-      (spec §4A) for the dashboard SPA, or the CLI's own device-code login
-      (DRFT-30) for `registerDeclaredBuild` — both mint the same kind of bearer
-      access-token JWT, and the server does not distinguish which UI minted it.
+      (spec §4A) for the dashboard SPA, or a bearer access-token JWT minted by
+      the device-code login (DRFT-30); the server does not distinguish which
+      minted it. It reads and manages; it can never register a build.
 
     A workload principal can never reach billing or membership operations: a
     compromised CI workflow must not be able to cancel a subscription or add an
-    org member. `registerDeclaredBuild` requires only member-level org
-    membership, same as every other org-scoped write a human can make from the
-    CLI or the dashboard.
+    org member.
 
     ## Not described here
 
@@ -237,10 +238,8 @@ paths:
         it, but it is *confirmed* against the token's verified repository claim,
         never trusted from the body alone — a mismatch is rejected with
         `claim_mismatch`, the same response shape `authorizeRepository` already
-        uses for its own claim-mismatch case. This is what lets one CLI code path
-        serve both producers (CI and laptop, DRFT-129) without weakening the
-        property that a valid token can only ever register builds for the
-        repository it actually belongs to.
+        uses for its own claim-mismatch case. A valid token can therefore only
+        ever register builds for the repository it actually belongs to.
 
         **Idempotency (spec §2.5a).** The build-instance ID is content-addressed over
         the tuple:
@@ -584,83 +583,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-    post:
-      operationId: registerDeclaredBuild
-      summary: Register a build against an org, as a signed-in person (a local build)
-      description: |
-        DRFT-124/DRFT-129's third principal: a build registered by a person
-        from a laptop with no CI at all (DRFT-165: a *local build*).
-        Authenticated with a human session (the CLI's own device-code login,
-        DRFT-30, mints the same kind of bearer token the dashboard SPA uses)
-        rather than a workload OIDC token.
-
-        `repository` (the git remote's `owner/name`, read by the CLI) is
-        required and must name a repository **already bound to this
-        organization** by a live policy (the challenge onboarding flow). A
-        person can only register builds for repositories the org has
-        onboarded; anything else is rejected with `422`
-        `repository_not_onboarded`. The server never takes the request's word
-        for who made the build: its `registered_by` is always the signed-in
-        person (`kind: user`), derived from the credential, and can never be
-        `workload`. That is the distinction callers must preserve: a pipeline
-        registered one build, a person registered the other, and the record
-        says which.
-
-        **Idempotency.** There is no run_id/run_attempt to content-address
-        over (that tuple, spec §2.5a, only ever applied to the CI producer),
-        so the `Idempotency-Key` header is required instead: an identical
-        key within the same org resolves to the existing build and returns
-        `200`, exactly as a content-addressed retry does on `registerBuild`.
-        A fresh key is a genuinely new build instance.
-      tags: [builds]
-      x-stability: public
-      security:
-        - userSession: []
-      parameters:
-        - name: Idempotency-Key
-          in: header
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 128 }
-          description: |
-            Caller-generated, unique per build-registration attempt. The CLI
-            mints one per invocation and never reuses it across distinct
-            builds.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BuildRegistration'
-      responses:
-        '201':
-          description: Build registered.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/BuildResponse' }
-        '200':
-          description: |
-            An earlier registration with the same `Idempotency-Key` already
-            exists for this org; that existing record is returned unchanged.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/BuildResponse' }
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '422':
-          description: |
-            Validation failed. `error.code: repository_not_onboarded` — the
-            request's `repository` is not bound to this organization by a live
-            policy (or is ambiguous across providers); onboard it from the
-            dashboard first. Other validation failures use `validation`.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /v1/orgs/{slug}/repos:
     parameters:
@@ -1443,26 +1365,17 @@ components:
     BuildRegistration:
       type: object
       description: |
-        Shared by both `registerBuild` (workload OIDC) and `registerDeclaredBuild`
-        (human session) — DRFT-129 inverts spec §2.2a's original "token-derived,
-        never from the body" rule to "confirm, don't derive." The CLI now reads
-        git directly and submits its own view of build identity on every
-        registration, for both producers.
+        The `registerBuild` request body. DRFT-129 inverts spec §2.2a's original
+        "token-derived, never from the body" rule to "confirm, don't derive": the
+        CLI reads git directly and submits its own view of build identity.
 
-        On `registerBuild`, `repository` is optional (omitting it is still valid,
-        for backward compatibility with CLI versions predating this field) but
-        when present is *confirmed* against the workload OIDC token's verified
-        repository claim and rejected with `claim_mismatch` on any difference —
-        it is never trusted from the body alone on that path, and the stored
-        build is still attributed to the claims-derived repository, not the
-        submitted one. `ref` on that path is informational only; the token's own
-        `ref` claim remains authoritative.
-
-        On `registerDeclaredBuild` there is no token to confirm against, so
-        `repository` is required and is resolved to a repository the
-        organization has already onboarded (`422` `repository_not_onboarded`
-        otherwise); the build is registered *by the signed-in person* and says
-        so — see `Build.registered_by`.
+        `repository` is optional (omitting it is still valid, for backward
+        compatibility with CLI versions predating this field) but when present is
+        *confirmed* against the workload OIDC token's verified repository claim and
+        rejected with `claim_mismatch` on any difference — it is never trusted from
+        the body alone, and the stored build is still attributed to the
+        claims-derived repository, not the submitted one. `ref` is informational
+        only; the token's own `ref` claim remains authoritative.
       required: [commit_sha, built_at]
       additionalProperties: false
       properties:
@@ -1470,17 +1383,15 @@ components:
           type: string
           maxLength: 256
           description: |
-            `owner/name`. See this schema's own description for how the two
-            registration operations treat this field differently: confirmed
-            against the token on `registerBuild`; resolved to an onboarded
-            repository on `registerDeclaredBuild`.
+            `owner/name`. Confirmed against the token's verified repository
+            claim; see this schema's own description.
         ref:
           type: string
           maxLength: 256
           description: |
             Git ref, e.g. `refs/heads/main`. Read directly from git by the CLI
-            (`internal/gitcontext`). Informational on `registerBuild`; the only
-            source of truth on `registerDeclaredBuild`.
+            (`internal/gitcontext`). Informational; the token's `ref` claim is
+            authoritative.
         commit_sha:
           type: string
           minLength: 7
@@ -1520,9 +1431,7 @@ components:
         repository_name:
           type: string
           description: |
-            Short repository name only — never the full internal path. Nothing
-            about who registered the build (`Build.registered_by`) appears on
-            this tier.
+            Short repository name only — never the full internal path.
         built_at: { type: string, format: date-time }
 
     Build:
@@ -1532,33 +1441,28 @@ components:
         - build_instance_id
         - repository_id
         - repository_name
-        - registered_by
+        - visibility
         - commit_sha
+        - ref
+        - workflow
         - built_at
         - registered_at
       properties:
         build_instance_id:
           type: string
           description: |
-            Opaque and server-issued. For a build registered by a pipeline,
-            content-addressed over the tuple documented on `registerBuild`; for a
-            build registered by a person, random (there is no run_id/run_attempt
-            to content-address over — spec §2.5a's tuple only ever applied to the
-            CI producer). Clients MUST treat this as opaque and MUST NOT parse it
-            either way.
+            Opaque and server-issued. Content-addressed over the tuple documented
+            on `registerBuild`. Clients MUST treat this as opaque and MUST NOT
+            parse it — the derivation is an implementation detail that may change.
         repository_id:
           type: string
           description: |
             Provider's stable repository identifier. Internal identity is keyed on
-            this rather than `owner/name`, which changes on rename. Every build
-            belongs to a repository the organization has onboarded, whoever
-            registered it.
+            this rather than `owner/name`, which changes on rename.
         repository_name: { type: string }
         repository_path:
           type: string
           description: Full `owner/name` path. Authenticated tier only.
-        registered_by:
-          $ref: '#/components/schemas/BuildRegistrant'
         visibility:
           $ref: '#/components/schemas/Visibility'
         provider:
@@ -1587,35 +1491,6 @@ components:
             `build-info.html`. Server-provided so the CLI never constructs it and
             cannot drift from server routing.
         metadata: { $ref: '#/components/schemas/BuildMetadata' }
-
-    BuildRegistrant:
-      type: object
-      description: |
-        The identity that registered a build, and what kind of identity it is.
-        This is the whole answer to "who vouches for this record", and it is
-        always one of exactly two things — never conflate them:
-
-        - `workload`: a CI pipeline, authenticated by the CI provider's OIDC
-          token on a repository bootstrapped through the challenge flow. The
-          provider confirmed the repository, workflow, ref and run, so those
-          fields are the pipeline's own claims. Registered by `registerBuild`.
-        - `user`: a person, authenticated by SSO, who published build data from
-          their own machine. Nothing here was confirmed by a pipeline; the
-          person vouches only that they registered it. Registered by
-          `registerDeclaredBuild`.
-
-        The kind is derived from the credential the server saw; no client can
-        choose it. Authenticated tier only: never present on `BuildPublic`.
-      required: [kind]
-      properties:
-        kind:
-          type: string
-          enum: [workload, user]
-        email:
-          type: string
-          description: |
-            Present when `kind` is `user`: the person's email as it was at
-            registration. Absent for `workload`.
 
     BuildResponse:
       type: object
