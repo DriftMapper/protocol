@@ -589,13 +589,16 @@ paths:
       summary: Register a declared build against an org, as a signed-in human
       description: |
         DRFT-124/DRFT-129's third principal: a build registered from a laptop
-        with no CI at all. Authenticated with a human session (the CLI's own
-        device-code login, DRFT-30, mints the same kind of bearer token the
-        dashboard SPA uses) rather than a workload OIDC token — there is no
-        token to confirm repository identity against, so `repository` in the
-        request body is trusted as submitted and stored verbatim (spec
-        §2.2a's confirm-don't-derive rule doesn't apply here; there is
-        nothing to confirm against). The resulting build's `attribution` is
+        with no CI at all (DRFT-165: a *local build*). Authenticated with a
+        human session (the CLI's own device-code login, DRFT-30, mints the
+        same kind of bearer token the dashboard SPA uses) rather than a
+        workload OIDC token. There is no token to confirm repository identity
+        against, so a local build is **never attributed to a repository**: it
+        has no repository fields at all, and `repository` in the request body
+        is accepted for compatibility with older CLIs and ignored. Instead it
+        is attributed to the signed-in person who registered it
+        (`Build.registered_by`), so anyone looking at it later can see it was
+        built locally, not by CI. The resulting build's `attribution` is
         `declared`, not `verified` — see `Build.attribution`.
 
         **Idempotency.** There is no run_id/run_attempt to content-address
@@ -1443,9 +1446,11 @@ components:
         submitted one. `ref` on that path is informational only; the token's own
         `ref` claim remains authoritative.
 
-        On `registerDeclaredBuild` there is no token to confirm against:
-        `repository` is required, self-reported, and is exactly what gets
-        stored — see `Build.attribution`.
+        On `registerDeclaredBuild` there is no token to confirm against, and
+        a local build is never attributed to a repository (DRFT-165):
+        `repository` is accepted but ignored, and the build is attributed to
+        the signed-in person instead — see `Build.attribution` and
+        `Build.registered_by`.
       required: [commit_sha, built_at]
       additionalProperties: false
       properties:
@@ -1454,7 +1459,9 @@ components:
           maxLength: 256
           description: |
             `owner/name`. See this schema's own description for how the two
-            registration operations treat this field differently.
+            registration operations treat this field differently: confirmed
+            against the token on `registerBuild`, ignored on
+            `registerDeclaredBuild`.
         ref:
           type: string
           maxLength: 256
@@ -1495,12 +1502,16 @@ components:
         custom metadata. This tier matches the disclosure boundary teams already have
         with a plain public build-info file, so nothing that is public today becomes
         private and nothing private today becomes public.
-      required: [build_instance_id, repository_name, built_at]
+      required: [build_instance_id, built_at]
       properties:
         build_instance_id: { type: string }
         repository_name:
           type: string
-          description: Short repository name only — never the full internal path.
+          description: |
+            Short repository name only — never the full internal path. Present
+            only for a `verified` build; a local build (`declared`) belongs to
+            no repository and carries none (DRFT-165). Nothing about the person
+            who registered a build (`Build.registered_by`) appears on this tier.
         built_at: { type: string, format: date-time }
 
     Build:
@@ -1508,7 +1519,6 @@ components:
       description: The authenticated disclosure tier — full metadata (spec §2.7).
       required:
         - build_instance_id
-        - repository_name
         - attribution
         - commit_sha
         - built_at
@@ -1528,24 +1538,37 @@ components:
           description: |
             `verified`: registered by `registerBuild` with a workload OIDC token
             confirming repository identity against the CI provider's own claims —
-            spec §2.2a/§4's full provenance chain. `declared`: registered by
-            `registerDeclaredBuild`, a human-authenticated write with
-            self-reported repository/ref/commit — org-attributed and carrying
+            spec §2.2a/§4's full provenance chain. `declared`: a *local build*,
+            registered by `registerDeclaredBuild`, a human-authenticated write
+            with self-reported ref/commit — attributed to the person who
+            registered it (`registered_by`), never to a repository, and carrying
             exactly the trust level of the rest of this record's fields, not a
-            provenance claim. Callers that render this record MUST label the
-            tier rather than implying verification that didn't happen.
+            provenance claim. Callers that render this record MUST label it as
+            built locally and not from CI, and MUST NOT present it as belonging
+            to a repository.
         repository_id:
           type: string
           description: |
             Provider's stable repository identifier. Internal identity is keyed on
             this rather than `owner/name`, which changes on rename. Present only
             when `attribution` is `verified` — a `declared` build has no linked
-            `repositories` row, only the self-reported `repository_name`/
-            `repository_path` below.
-        repository_name: { type: string }
+            repository and carries none of the repository fields.
+        repository_name:
+          type: string
+          description: Present only when `attribution` is `verified` — see `repository_id`.
         repository_path:
           type: string
-          description: Full `owner/name` path. Authenticated tier only.
+          description: |
+            Full `owner/name` path. Authenticated tier only. Present only when
+            `attribution` is `verified` — see `repository_id`.
+        registered_by:
+          type: string
+          description: |
+            Email of the signed-in person who registered this build, as it was
+            at registration. Present only when `attribution` is `declared`
+            (a local build); absent on a `verified` build, which is attributed
+            to a repository's CI instead. Authenticated tier only: never
+            present on the public tier.
         visibility:
           $ref: '#/components/schemas/Visibility'
           description: Present only when `attribution` is `verified` — see `repository_id`.

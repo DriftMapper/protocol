@@ -418,12 +418,14 @@ type AdminResetStepStatus string
 type Build struct {
 	// Attribution `verified`: registered by `registerBuild` with a workload OIDC token
 	// confirming repository identity against the CI provider's own claims —
-	// spec §2.2a/§4's full provenance chain. `declared`: registered by
-	// `registerDeclaredBuild`, a human-authenticated write with
-	// self-reported repository/ref/commit — org-attributed and carrying
+	// spec §2.2a/§4's full provenance chain. `declared`: a *local build*,
+	// registered by `registerDeclaredBuild`, a human-authenticated write
+	// with self-reported ref/commit — attributed to the person who
+	// registered it (`registered_by`), never to a repository, and carrying
 	// exactly the trust level of the rest of this record's fields, not a
-	// provenance claim. Callers that render this record MUST label the
-	// tier rather than implying verification that didn't happen.
+	// provenance claim. Callers that render this record MUST label it as
+	// built locally and not from CI, and MUST NOT present it as belonging
+	// to a repository.
 	Attribution BuildAttribution `json:"attribution"`
 
 	// BuildInstanceId Opaque and server-issued. For a `verified` build, content-addressed
@@ -460,15 +462,24 @@ type Build struct {
 	Ref          *string   `json:"ref,omitempty"`
 	RegisteredAt time.Time `json:"registered_at"`
 
+	// RegisteredBy Email of the signed-in person who registered this build, as it was
+	// at registration. Present only when `attribution` is `declared`
+	// (a local build); absent on a `verified` build, which is attributed
+	// to a repository's CI instead. Authenticated tier only: never
+	// present on the public tier.
+	RegisteredBy *string `json:"registered_by,omitempty"`
+
 	// RepositoryId Provider's stable repository identifier. Internal identity is keyed on
 	// this rather than `owner/name`, which changes on rename. Present only
 	// when `attribution` is `verified` — a `declared` build has no linked
-	// `repositories` row, only the self-reported `repository_name`/
-	// `repository_path` below.
-	RepositoryId   *string `json:"repository_id,omitempty"`
-	RepositoryName string  `json:"repository_name"`
+	// repository and carries none of the repository fields.
+	RepositoryId *string `json:"repository_id,omitempty"`
 
-	// RepositoryPath Full `owner/name` path. Authenticated tier only.
+	// RepositoryName Present only when `attribution` is `verified` — see `repository_id`.
+	RepositoryName *string `json:"repository_name,omitempty"`
+
+	// RepositoryPath Full `owner/name` path. Authenticated tier only. Present only when
+	// `attribution` is `verified` — see `repository_id`.
 	RepositoryPath *string `json:"repository_path,omitempty"`
 
 	// ResolutionUrl Canonical resolution page for this build — the URL written into
@@ -491,12 +502,14 @@ type Build struct {
 
 // BuildAttribution `verified`: registered by `registerBuild` with a workload OIDC token
 // confirming repository identity against the CI provider's own claims —
-// spec §2.2a/§4's full provenance chain. `declared`: registered by
-// `registerDeclaredBuild`, a human-authenticated write with
-// self-reported repository/ref/commit — org-attributed and carrying
+// spec §2.2a/§4's full provenance chain. `declared`: a *local build*,
+// registered by `registerDeclaredBuild`, a human-authenticated write
+// with self-reported ref/commit — attributed to the person who
+// registered it (`registered_by`), never to a repository, and carrying
 // exactly the trust level of the rest of this record's fields, not a
-// provenance claim. Callers that render this record MUST label the
-// tier rather than implying verification that didn't happen.
+// provenance claim. Callers that render this record MUST label it as
+// built locally and not from CI, and MUST NOT present it as belonging
+// to a repository.
 type BuildAttribution string
 
 // BuildListPayload defines model for BuildListPayload.
@@ -541,8 +554,11 @@ type BuildPublic struct {
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
 
-	// RepositoryName Short repository name only — never the full internal path.
-	RepositoryName string `json:"repository_name"`
+	// RepositoryName Short repository name only — never the full internal path. Present
+	// only for a `verified` build; a local build (`declared`) belongs to
+	// no repository and carries none (DRFT-165). Nothing about the person
+	// who registered a build (`Build.registered_by`) appears on this tier.
+	RepositoryName *string `json:"repository_name,omitempty"`
 }
 
 // BuildRegistration Shared by both `registerBuild` (workload OIDC) and `registerDeclaredBuild`
@@ -560,9 +576,11 @@ type BuildPublic struct {
 // submitted one. `ref` on that path is informational only; the token's own
 // `ref` claim remains authoritative.
 //
-// On `registerDeclaredBuild` there is no token to confirm against:
-// `repository` is required, self-reported, and is exactly what gets
-// stored — see `Build.attribution`.
+// On `registerDeclaredBuild` there is no token to confirm against, and
+// a local build is never attributed to a repository (DRFT-165):
+// `repository` is accepted but ignored, and the build is attributed to
+// the signed-in person instead — see `Build.attribution` and
+// `Build.registered_by`.
 type BuildRegistration struct {
 	BuiltAt time.Time `json:"built_at"`
 
@@ -595,7 +613,9 @@ type BuildRegistration struct {
 	Ref *string `json:"ref,omitempty"`
 
 	// Repository `owner/name`. See this schema's own description for how the two
-	// registration operations treat this field differently.
+	// registration operations treat this field differently: confirmed
+	// against the token on `registerBuild`, ignored on
+	// `registerDeclaredBuild`.
 	Repository *string `json:"repository,omitempty"`
 
 	// TriggerEvent Normalized trigger, e.g. `push`, `pull_request`, `manual`.

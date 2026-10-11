@@ -53,3 +53,22 @@ POST /v1/builds the response property `data/workflow` became optional for the st
 POST /v1/builds the response property `data/workflow` became optional for the status `201`
 POST /v1/builds the `data/metadata/additionalProperties/` response property's maxLength was increased from `1024` to `4096` for the response status `200`
 POST /v1/builds the `data/metadata/additionalProperties/` response property's maxLength was increased from `1024` to `4096` for the response status `201`
+
+DRFT-165: `Build.repository_name` becomes optional (it was required), because a
+local build (attribution `declared`, registered from a laptop with no CI) is never
+attributed to a repository and so has no repository name; it is attributed to the
+registering person instead (new optional `Build.registered_by`). Relaxation, not
+removal, and the same pre-launch substance as DRFT-129 above: on `POST /v1/builds`
+(`registerBuild`) every response still carries `repository_name` (a verified build
+always has a repository), so the loosening is observable only through
+`registerDeclaredBuild` and `listBuilds`, where a declared build can now appear.
+The CLI never reads `repository_name` from any response (it writes build-info.html
+from the build id and resolution URL), so no installed client depends on the old
+strictness. Safe only pre-launch while the latest tag is still v0.x with no
+production customers. See DRFT-165 for the full decision record.
+
+POST /v1/builds the response property `data/repository_name` became optional for the status `200`
+POST /v1/builds the response property `data/repository_name` became optional for the status `201`
+GET /v1/orgs/{slug}/builds the response property `data/items/items/repository_name` became optional for the status `200`
+POST /v1/orgs/{slug}/builds the response property `data/repository_name` became optional for the status `200`
+POST /v1/orgs/{slug}/builds the response property `data/repository_name` became optional for the status `201`
