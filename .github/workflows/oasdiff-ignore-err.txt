@@ -72,3 +72,26 @@ POST /v1/builds the response property `data/repository_name` became optional for
 GET /v1/orgs/{slug}/builds the response property `data/items/items/repository_name` became optional for the status `200`
 POST /v1/orgs/{slug}/builds the response property `data/repository_name` became optional for the status `200`
 POST /v1/orgs/{slug}/builds the response property `data/repository_name` became optional for the status `201`
+
+DRFT-165 (revised): `Build.attribution` (verified | declared) is removed and
+`Build.registered_by` changes from a string to an object `{kind, email?}`. Who
+registered a build is now one identity with a kind, a CI pipeline (`workload`) or a
+signed-in person (`user`), instead of a verified/declared label plus an email, so
+the vocabulary that let a laptop build be mistaken for a pipeline one is gone from
+the wire. Same pre-launch substance as DRFT-124/126 above (sanctioned reason 2):
+`registered_by` as a string existed only in v0.19.0, which no deployed server
+returned; and the CLI never reads `attribution` from any response (it writes
+build-info.html from the build id and resolution URL), so no installed client
+depends on either. Safe only pre-launch, while there are no production customers.
+See DRFT-165.
+
+POST /v1/builds removed the required property `data/attribution` from the response with the `200` status
+POST /v1/builds removed the required property `data/attribution` from the response with the `201` status
+POST /v1/builds the `data/registered_by` response's property `type` changed from `string` to `object` for status `200`
+POST /v1/builds the `data/registered_by` response's property `type` changed from `string` to `object` for status `201`
+GET /v1/orgs/{slug}/builds removed the required property `data/items/items/attribution` from the response with the `200` status
+GET /v1/orgs/{slug}/builds the `data/items/items/registered_by` response's property `type` changed from `string` to `object` for status `200`
+POST /v1/orgs/{slug}/builds removed the required property `data/attribution` from the response with the `200` status
+POST /v1/orgs/{slug}/builds removed the required property `data/attribution` from the response with the `201` status
+POST /v1/orgs/{slug}/builds the `data/registered_by` response's property `type` changed from `string` to `object` for status `200`
+POST /v1/orgs/{slug}/builds the `data/registered_by` response's property `type` changed from `string` to `object` for status `201`
