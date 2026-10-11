@@ -52,24 +52,6 @@ func (e AdminResetStepStatus) Valid() bool {
 	}
 }
 
-// Defines values for BuildRegistrantKind.
-const (
-	BuildRegistrantKindUser     BuildRegistrantKind = "user"
-	BuildRegistrantKindWorkload BuildRegistrantKind = "workload"
-)
-
-// Valid indicates whether the value is a known member of the BuildRegistrantKind enum.
-func (e BuildRegistrantKind) Valid() bool {
-	switch e {
-	case BuildRegistrantKindUser:
-		return true
-	case BuildRegistrantKindWorkload:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ChallengeStatus.
 const (
 	ChallengeStatusExpired  ChallengeStatus = "expired"
@@ -416,12 +398,9 @@ type AdminResetStepStatus string
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
-	// BuildInstanceId Opaque and server-issued. For a build registered by a pipeline,
-	// content-addressed over the tuple documented on `registerBuild`; for a
-	// build registered by a person, random (there is no run_id/run_attempt
-	// to content-address over — spec §2.5a's tuple only ever applied to the
-	// CI producer). Clients MUST treat this as opaque and MUST NOT parse it
-	// either way.
+	// BuildInstanceId Opaque and server-issued. Content-addressed over the tuple documented
+	// on `registerBuild`. Clients MUST treat this as opaque and MUST NOT
+	// parse it — the derivation is an implementation detail that may change.
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
 	CommitAuthor    *string   `json:"commit_author,omitempty"`
@@ -454,30 +433,11 @@ type Build struct {
 	// server-side), not a literal "GitHub Actions" spelling — matches what every
 	// `provider`/`claims.Issuer` value on the wire actually contains.
 	Provider     *Provider `json:"provider,omitempty"`
-	Ref          *string   `json:"ref,omitempty"`
+	Ref          string    `json:"ref"`
 	RegisteredAt time.Time `json:"registered_at"`
 
-	// RegisteredBy The identity that registered a build, and what kind of identity it is.
-	// This is the whole answer to "who vouches for this record", and it is
-	// always one of exactly two things — never conflate them:
-	//
-	// - `workload`: a CI pipeline, authenticated by the CI provider's OIDC
-	//   token on a repository bootstrapped through the challenge flow. The
-	//   provider confirmed the repository, workflow, ref and run, so those
-	//   fields are the pipeline's own claims. Registered by `registerBuild`.
-	// - `user`: a person, authenticated by SSO, who published build data from
-	//   their own machine. Nothing here was confirmed by a pipeline; the
-	//   person vouches only that they registered it. Registered by
-	//   `registerDeclaredBuild`.
-	//
-	// The kind is derived from the credential the server saw; no client can
-	// choose it. Authenticated tier only: never present on `BuildPublic`.
-	RegisteredBy BuildRegistrant `json:"registered_by"`
-
 	// RepositoryId Provider's stable repository identifier. Internal identity is keyed on
-	// this rather than `owner/name`, which changes on rename. Every build
-	// belongs to a repository the organization has onboarded, whoever
-	// registered it.
+	// this rather than `owner/name`, which changes on rename.
 	RepositoryId   string `json:"repository_id"`
 	RepositoryName string `json:"repository_name"`
 
@@ -500,8 +460,8 @@ type Build struct {
 	// Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
 	// Repository binding is unlimited and unmetered on every plan (DRFT-72/117);
 	// this claim has no billing role.
-	Visibility *Visibility `json:"visibility,omitempty"`
-	Workflow   *string     `json:"workflow,omitempty"`
+	Visibility Visibility `json:"visibility"`
+	Workflow   string     `json:"workflow"`
 }
 
 // BuildListPayload defines model for BuildListPayload.
@@ -546,57 +506,21 @@ type BuildPublic struct {
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
 
-	// RepositoryName Short repository name only — never the full internal path. Nothing
-	// about who registered the build (`Build.registered_by`) appears on
-	// this tier.
+	// RepositoryName Short repository name only — never the full internal path.
 	RepositoryName string `json:"repository_name"`
 }
 
-// BuildRegistrant The identity that registered a build, and what kind of identity it is.
-// This is the whole answer to "who vouches for this record", and it is
-// always one of exactly two things — never conflate them:
+// BuildRegistration The `registerBuild` request body. DRFT-129 inverts spec §2.2a's original
+// "token-derived, never from the body" rule to "confirm, don't derive": the
+// CLI reads git directly and submits its own view of build identity.
 //
-//   - `workload`: a CI pipeline, authenticated by the CI provider's OIDC
-//     token on a repository bootstrapped through the challenge flow. The
-//     provider confirmed the repository, workflow, ref and run, so those
-//     fields are the pipeline's own claims. Registered by `registerBuild`.
-//   - `user`: a person, authenticated by SSO, who published build data from
-//     their own machine. Nothing here was confirmed by a pipeline; the
-//     person vouches only that they registered it. Registered by
-//     `registerDeclaredBuild`.
-//
-// The kind is derived from the credential the server saw; no client can
-// choose it. Authenticated tier only: never present on `BuildPublic`.
-type BuildRegistrant struct {
-	// Email Present when `kind` is `user`: the person's email as it was at
-	// registration. Absent for `workload`.
-	Email *string             `json:"email,omitempty"`
-	Kind  BuildRegistrantKind `json:"kind"`
-}
-
-// BuildRegistrantKind defines model for BuildRegistrant.Kind.
-type BuildRegistrantKind string
-
-// BuildRegistration Shared by both `registerBuild` (workload OIDC) and `registerDeclaredBuild`
-// (human session) — DRFT-129 inverts spec §2.2a's original "token-derived,
-// never from the body" rule to "confirm, don't derive." The CLI now reads
-// git directly and submits its own view of build identity on every
-// registration, for both producers.
-//
-// On `registerBuild`, `repository` is optional (omitting it is still valid,
-// for backward compatibility with CLI versions predating this field) but
-// when present is *confirmed* against the workload OIDC token's verified
-// repository claim and rejected with `claim_mismatch` on any difference —
-// it is never trusted from the body alone on that path, and the stored
-// build is still attributed to the claims-derived repository, not the
-// submitted one. `ref` on that path is informational only; the token's own
-// `ref` claim remains authoritative.
-//
-// On `registerDeclaredBuild` there is no token to confirm against, so
-// `repository` is required and is resolved to a repository the
-// organization has already onboarded (`422` `repository_not_onboarded`
-// otherwise); the build is registered *by the signed-in person* and says
-// so — see `Build.registered_by`.
+// `repository` is optional (omitting it is still valid, for backward
+// compatibility with CLI versions predating this field) but when present is
+// *confirmed* against the workload OIDC token's verified repository claim and
+// rejected with `claim_mismatch` on any difference — it is never trusted from
+// the body alone, and the stored build is still attributed to the
+// claims-derived repository, not the submitted one. `ref` is informational
+// only; the token's own `ref` claim remains authoritative.
 type BuildRegistration struct {
 	BuiltAt time.Time `json:"built_at"`
 
@@ -624,14 +548,12 @@ type BuildRegistration struct {
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
 
 	// Ref Git ref, e.g. `refs/heads/main`. Read directly from git by the CLI
-	// (`internal/gitcontext`). Informational on `registerBuild`; the only
-	// source of truth on `registerDeclaredBuild`.
+	// (`internal/gitcontext`). Informational; the token's `ref` claim is
+	// authoritative.
 	Ref *string `json:"ref,omitempty"`
 
-	// Repository `owner/name`. See this schema's own description for how the two
-	// registration operations treat this field differently: confirmed
-	// against the token on `registerBuild`; resolved to an onboarded
-	// repository on `registerDeclaredBuild`.
+	// Repository `owner/name`. Confirmed against the token's verified repository
+	// claim; see this schema's own description.
 	Repository *string `json:"repository,omitempty"`
 
 	// TriggerEvent Normalized trigger, e.g. `push`, `pull_request`, `manual`.
@@ -1282,14 +1204,6 @@ type ListBuildsParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
-// RegisterDeclaredBuildParams defines parameters for RegisterDeclaredBuild.
-type RegisterDeclaredBuildParams struct {
-	// IdempotencyKey Caller-generated, unique per build-registration attempt. The CLI
-	// mints one per invocation and never reuses it across distinct
-	// builds.
-	IdempotencyKey string `json:"Idempotency-Key"`
-}
-
 // ListChallengesParams defines parameters for ListChallenges.
 type ListChallengesParams struct {
 	// Cursor Opaque cursor from a previous page's `next_cursor`.
@@ -1341,9 +1255,6 @@ type UpdateOrgJSONRequestBody UpdateOrgJSONBody
 
 // StartOrgCheckoutJSONRequestBody defines body for StartOrgCheckout for application/json ContentType.
 type StartOrgCheckoutJSONRequestBody StartOrgCheckoutJSONBody
-
-// RegisterDeclaredBuildJSONRequestBody defines body for RegisterDeclaredBuild for application/json ContentType.
-type RegisterDeclaredBuildJSONRequestBody = BuildRegistration
 
 // CreateChallengeJSONRequestBody defines body for CreateChallenge for application/json ContentType.
 type CreateChallengeJSONRequestBody = CreateChallengeRequest
