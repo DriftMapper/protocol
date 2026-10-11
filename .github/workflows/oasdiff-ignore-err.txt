@@ -95,3 +95,24 @@ POST /v1/orgs/{slug}/builds removed the required property `data/attribution` fro
 POST /v1/orgs/{slug}/builds removed the required property `data/attribution` from the response with the `201` status
 POST /v1/orgs/{slug}/builds the `data/registered_by` response's property `type` changed from `string` to `object` for status `200`
 POST /v1/orgs/{slug}/builds the `data/registered_by` response's property `type` changed from `string` to `object` for status `201`
+
+DRFT-165 (CI-only registration): `registerDeclaredBuild` (POST /v1/orgs/{slug}/builds)
+is removed outright and `Build.registered_by` with it. Letting a person register a build
+from a laptop required resolving a self-typed `owner/name` to a repository record, which
+put unproven repository names beside ones an OIDC token proved; that breaks the trust
+boundary the challenge flow exists to hold, so the path is cut rather than superseded.
+Every build is now registered by a CI pipeline (a workload OIDC token is the only
+credential `registerBuild` accepts), so `registered_by` carried no information beyond
+the existing `provider`. Same pre-launch substance as DRFT-124/126 above (sanctioned
+reason 2): `registerDeclaredBuild` shipped in v0.x with no production customers and no
+declared builds exist in staging or prod; `registered_by` as an object existed only in
+v0.20.0, which no deployed server or CLI pins (both pin v0.19.0). `listBuilds`
+(GET /v1/orgs/{slug}/builds) is dashboard-tier and unchanged; it shows up below only
+because the strip step leaves the removed POST's path in the base side. The `Build`
+fields loosened by DRFT-129/165 are required again, which only tightens responses.
+Safe only pre-launch, while there are no production customers. See DRFT-165.
+
+POST /v1/builds removed the required property `data/registered_by` from the response with the `200` status
+POST /v1/builds removed the required property `data/registered_by` from the response with the `201` status
+POST /v1/orgs/{slug}/builds api path removed without deprecation
+GET /v1/orgs/{slug}/builds api path removed without deprecation
