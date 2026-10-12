@@ -417,12 +417,14 @@ type Build struct {
 	// so these values never appear in the unauthenticated resolution page or its OG
 	// tags. There is no per-key public opt-in in v1.
 	//
-	// Keys beginning `driftmapper.` are reserved and rejected, leaving room to
-	// promote custom fields to first-class ones later without collision. The
-	// reserved-prefix rule is enforced in server code rather than expressed in the
-	// `pattern` below: the natural expression is a negative lookahead, which Go's
-	// RE2 engine cannot compile, so encoding it here would produce a schema the
-	// server cannot mechanically enforce.
+	// Keys beginning `sys_` (matched case-insensitively) are reserved and
+	// rejected: the prefix is the namespace for server-stamped keys, so a key
+	// under it means the server set it, never the customer's pipeline. The name
+	// is deliberately brand-neutral (DRFT-181). The reserved-prefix rule is
+	// enforced in server code rather than expressed in the `pattern` below: the
+	// natural expression is a negative lookahead, which Go's RE2 engine cannot
+	// compile, so encoding it here would produce a schema the server cannot
+	// mechanically enforce.
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
 
 	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
@@ -485,12 +487,14 @@ type BuildListResponse struct {
 // so these values never appear in the unauthenticated resolution page or its OG
 // tags. There is no per-key public opt-in in v1.
 //
-// Keys beginning `driftmapper.` are reserved and rejected, leaving room to
-// promote custom fields to first-class ones later without collision. The
-// reserved-prefix rule is enforced in server code rather than expressed in the
-// `pattern` below: the natural expression is a negative lookahead, which Go's
-// RE2 engine cannot compile, so encoding it here would produce a schema the
-// server cannot mechanically enforce.
+// Keys beginning `sys_` (matched case-insensitively) are reserved and
+// rejected: the prefix is the namespace for server-stamped keys, so a key
+// under it means the server set it, never the customer's pipeline. The name
+// is deliberately brand-neutral (DRFT-181). The reserved-prefix rule is
+// enforced in server code rather than expressed in the `pattern` below: the
+// natural expression is a negative lookahead, which Go's RE2 engine cannot
+// compile, so encoding it here would produce a schema the server cannot
+// mechanically enforce.
 type BuildMetadata map[string]string
 
 // BuildPublic The unauthenticated disclosure tier (spec §2.7). This is exactly what link
@@ -510,9 +514,11 @@ type BuildPublic struct {
 	RepositoryName string `json:"repository_name"`
 }
 
-// BuildRegistration The `registerBuild` request body. DRFT-129 inverts spec §2.2a's original
-// "token-derived, never from the body" rule to "confirm, don't derive": the
-// CLI reads git directly and submits its own view of build identity.
+// BuildRegistration The `registerBuild` request body. DRFT-129 relaxed spec §2.2a's original
+// "token-derived, never from the body" rule so the CLI may submit its own view
+// of build identity; DRFT-182 tightens it again for what the token proves:
+// `commit_sha` and `trigger_event` come from the verified token when it carries
+// them, and a submitted value is only confirmed against it.
 //
 // `repository` is optional (omitting it is still valid, for backward
 // compatibility with CLI versions predating this field) but when present is
@@ -527,7 +533,12 @@ type BuildRegistration struct {
 	// CommitAuthor Normalized by the CLI from provider-specific build context.
 	CommitAuthor    *string `json:"commit_author,omitempty"`
 	CommitCommitter *string `json:"commit_committer,omitempty"`
-	CommitSha       string  `json:"commit_sha"`
+
+	// CommitSha Optional since DRFT-182. When the workload token carries the commit
+	// (GitHub Actions: `sha`), the token's value is used and a submitted value
+	// is confirmed against it (`claim_mismatch` on difference). Required only
+	// for an issuer whose token does not carry it.
+	CommitSha *string `json:"commit_sha,omitempty"`
 
 	// Metadata Free-form organization-defined fields (owning team, ticket reference,
 	// environment label). Flat string-to-string by design (spec §2.2a): nesting
@@ -539,12 +550,14 @@ type BuildRegistration struct {
 	// so these values never appear in the unauthenticated resolution page or its OG
 	// tags. There is no per-key public opt-in in v1.
 	//
-	// Keys beginning `driftmapper.` are reserved and rejected, leaving room to
-	// promote custom fields to first-class ones later without collision. The
-	// reserved-prefix rule is enforced in server code rather than expressed in the
-	// `pattern` below: the natural expression is a negative lookahead, which Go's
-	// RE2 engine cannot compile, so encoding it here would produce a schema the
-	// server cannot mechanically enforce.
+	// Keys beginning `sys_` (matched case-insensitively) are reserved and
+	// rejected: the prefix is the namespace for server-stamped keys, so a key
+	// under it means the server set it, never the customer's pipeline. The name
+	// is deliberately brand-neutral (DRFT-181). The reserved-prefix rule is
+	// enforced in server code rather than expressed in the `pattern` below: the
+	// natural expression is a negative lookahead, which Go's RE2 engine cannot
+	// compile, so encoding it here would produce a schema the server cannot
+	// mechanically enforce.
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
 
 	// Ref Git ref, e.g. `refs/heads/main`. Read directly from git by the CLI
@@ -556,7 +569,9 @@ type BuildRegistration struct {
 	// claim; see this schema's own description.
 	Repository *string `json:"repository,omitempty"`
 
-	// TriggerEvent Normalized trigger, e.g. `push`, `pull_request`, `manual`.
+	// TriggerEvent Normalized trigger, e.g. `push`, `pull_request`, `manual`. Derived from
+	// the token when it carries the event (GitHub Actions: `event_name`); a
+	// submitted value is confirmed against it (DRFT-182).
 	TriggerEvent *string `json:"trigger_event,omitempty"`
 }
 
