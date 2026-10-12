@@ -230,16 +230,22 @@ paths:
         a human session cannot register builds, because build provenance derives
         entirely from verified token claims.
 
-        **Confirm, don't derive (spec §2.2a, inverted by DRFT-129).** Repository ID,
-        repository visibility, workflow, run ID, and run attempt are still read
-        exclusively from verified claims — there is no request field for any of
-        them, and supplying one is rejected with `unknown_field`. `repository` is
-        the one exception: the CLI now reads it directly from git and may submit
-        it, but it is *confirmed* against the token's verified repository claim,
-        never trusted from the body alone — a mismatch is rejected with
-        `claim_mismatch`, the same response shape `authorizeRepository` already
-        uses for its own claim-mismatch case. A valid token can therefore only
-        ever register builds for the repository it actually belongs to.
+        **Verified from the token, confirmed if also submitted (spec §2.2a,
+        DRFT-129, DRFT-182).** Repository ID, repository visibility, workflow, run
+        ID, and run attempt are read exclusively from verified claims — there is no
+        request field for any of them, and supplying one is rejected with
+        `unknown_field`. `commit_sha` and `trigger_event` are read from the token
+        too, when the issuer's token carries them (GitHub Actions: `sha` and
+        `event_name`); a request that also submits one is *confirmed* against the
+        token and rejected with `claim_mismatch` on any difference. `repository` is
+        confirmed the same way. A valid token can therefore only ever register
+        builds for the repository it actually belongs to, and a value the token
+        proves is never taken on the body's word. A value the token does not carry
+        (for an issuer that lacks it) is taken from the body; a registration with
+        no commit SHA from either source is rejected.
+
+        What the token cannot prove stays declared by the pipeline: `commit_author`,
+        `commit_committer`, `built_at` and custom `metadata`.
 
         **Idempotency (spec §2.5a).** The build-instance ID is content-addressed over
         the tuple:
@@ -1348,12 +1354,14 @@ components:
         so these values never appear in the unauthenticated resolution page or its OG
         tags. There is no per-key public opt-in in v1.
 
-        Keys beginning `driftmapper.` are reserved and rejected, leaving room to
-        promote custom fields to first-class ones later without collision. The
-        reserved-prefix rule is enforced in server code rather than expressed in the
-        `pattern` below: the natural expression is a negative lookahead, which Go's
-        RE2 engine cannot compile, so encoding it here would produce a schema the
-        server cannot mechanically enforce.
+        Keys beginning `sys_` (matched case-insensitively) are reserved and
+        rejected: the prefix is the namespace for server-stamped keys, so a key
+        under it means the server set it, never the customer's pipeline. The name
+        is deliberately brand-neutral (DRFT-181). The reserved-prefix rule is
+        enforced in server code rather than expressed in the `pattern` below: the
+        natural expression is a negative lookahead, which Go's RE2 engine cannot
+        compile, so encoding it here would produce a schema the server cannot
+        mechanically enforce.
       maxProperties: 200
       propertyNames:
         maxLength: 64
@@ -1365,9 +1373,11 @@ components:
     BuildRegistration:
       type: object
       description: |
-        The `registerBuild` request body. DRFT-129 inverts spec §2.2a's original
-        "token-derived, never from the body" rule to "confirm, don't derive": the
-        CLI reads git directly and submits its own view of build identity.
+        The `registerBuild` request body. DRFT-129 relaxed spec §2.2a's original
+        "token-derived, never from the body" rule so the CLI may submit its own view
+        of build identity; DRFT-182 tightens it again for what the token proves:
+        `commit_sha` and `trigger_event` come from the verified token when it carries
+        them, and a submitted value is only confirmed against it.
 
         `repository` is optional (omitting it is still valid, for backward
         compatibility with CLI versions predating this field) but when present is
@@ -1376,7 +1386,7 @@ components:
         the body alone, and the stored build is still attributed to the
         claims-derived repository, not the submitted one. `ref` is informational
         only; the token's own `ref` claim remains authoritative.
-      required: [commit_sha, built_at]
+      required: [built_at]
       additionalProperties: false
       properties:
         repository:
@@ -1396,6 +1406,11 @@ components:
           type: string
           minLength: 7
           maxLength: 64
+          description: |
+            Optional since DRFT-182. When the workload token carries the commit
+            (GitHub Actions: `sha`), the token's value is used and a submitted value
+            is confirmed against it (`claim_mismatch` on difference). Required only
+            for an issuer whose token does not carry it.
         commit_author:
           type: string
           maxLength: 256
@@ -1409,7 +1424,10 @@ components:
         trigger_event:
           type: string
           maxLength: 64
-          description: Normalized trigger, e.g. `push`, `pull_request`, `manual`.
+          description: |
+            Normalized trigger, e.g. `push`, `pull_request`, `manual`. Derived from
+            the token when it carries the event (GitHub Actions: `event_name`); a
+            submitted value is confirmed against it (DRFT-182).
         metadata:
           $ref: '#/components/schemas/BuildMetadata'
 
