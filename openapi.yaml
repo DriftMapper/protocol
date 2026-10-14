@@ -115,8 +115,9 @@ info:
     `FORMAT-build-info.md` in this repository (spec §2.3).
 
     The resolution page (`/r/{buildInstanceId}`) is server-rendered HTML, not a JSON
-    endpoint (spec §2.7). Its two disclosure tiers correspond exactly to the
-    `BuildPublic` and `Build` schemas below.
+    endpoint (spec §2.7). Its two disclosure tiers correspond to the
+    `BuildPublic` schema and, for a signed-in reader, the `BuildView` projection
+    below (`Build` is the full record returned to the workload that registered it).
 
 servers:
   - url: https://api.driftmapper.io
@@ -141,6 +142,13 @@ tags:
       Organization membership/switching for the signed-in user — which orgs they
       belong to and at what role. Distinct from `billing`, which covers a single
       already-resolved org's plan.
+  - name: access
+    description: |
+      Field-level access (DRFT-169): groups (WorkOS native groups, org-level) and
+      the per-repository policies mapping each field to the groups that may read
+      it. All `dashboard`-tier and Owner/Admin only — the server answers `403`
+      to a plain member. The CLI and CI identities never reach these: a workload
+      token can write build values but can never change who may read them.
   - name: billing
     description: Subscription and checkout.
   - name: admin
@@ -322,20 +330,25 @@ paths:
         This is the JSON equivalent of the authenticated tier of the resolution page.
         There is no unauthenticated variant of this endpoint: the public tier exists
         only as server-rendered HTML and OG tags (spec §2.7).
+
+        The record is **projected for the caller** (DRFT-169): only the fields the
+        caller's groups may read are present — see `BuildView`.
       tags: [builds]
       x-stability: dashboard
       security:
         - userSession: []
       responses:
         '200':
-          description: Build detail.
+          description: Build detail, projected for the caller.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/BuildResponse' }
+              schema: { $ref: '#/components/schemas/BuildViewResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
 
   /v1/repositories/authorize:
     post:
@@ -554,6 +567,9 @@ paths:
         `POST /v1/builds` (`registerBuild`), which stays flat: a workload OIDC token
         has no org/slug context at registration time, and the server resolves the
         owning org from the repository's authorization instead.
+
+        Every build is **projected for the caller** (DRFT-169): only the fields
+        the caller's groups may read are present — see `BuildView`.
       tags: [builds]
       x-stability: dashboard
       security:
@@ -579,16 +595,18 @@ paths:
         - $ref: '#/components/parameters/Limit'
       responses:
         '200':
-          description: A page of builds, newest first.
+          description: A page of builds, newest first, each projected for the caller.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/BuildListResponse' }
+              schema: { $ref: '#/components/schemas/BuildViewListResponse' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
 
   /v1/orgs/{slug}/repos:
     parameters:
@@ -988,6 +1006,404 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /v1/orgs/{slug}/groups:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    get:
+      operationId: listGroups
+      summary: List the organization's groups
+      description: |
+        Owner/Admin only. WorkOS native groups; the implicit Everyone group is not listed.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The organization's groups.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      operationId: createGroup
+      summary: Create a group
+      description: |
+        Owner/Admin only.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateGroupRequest' }
+      responses:
+        '201':
+          description: Group created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            A group with this name already exists in the organization.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/orgs/{slug}/groups/{groupId}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/GroupId'
+    patch:
+      operationId: updateGroup
+      summary: Rename a group or change its description
+      description: |
+        Owner/Admin only.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateGroupRequest' }
+      responses:
+        '200':
+          description: Group updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            A group with this name already exists in the organization.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      operationId: deleteGroup
+      summary: Delete a group
+      description: |
+        Owner/Admin only.
+
+        Members lose the group with it. Policies that still name the group grant
+        nothing through it (no one holds the id), but are not rewritten; an admin
+        cleans them up from the policy screen. A cached group set can keep granting
+        it until the cache expires.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Group deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/groups/{groupId}/members:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      operationId: listGroupMembers
+      summary: List a group's members
+      description: |
+        Owner/Admin only.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The group's members.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupMembersResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/groups/{groupId}/members/{userID}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/GroupId'
+      - name: userID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      operationId: addGroupMember
+      summary: Add an organization member to a group
+      description: |
+        Owner/Admin only. Idempotent.
+
+        A change reaches the member's open sessions, CLI and MCP tokens when their
+        cached group set expires (DRFT-175), not instantly.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Member is in the group.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: removeGroupMember
+      summary: Remove an organization member from a group
+      description: |
+        Owner/Admin only. Idempotent.
+
+        Takes effect for open sessions when their cached group set expires.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Member is not in the group.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/repos/{repositoryId}/field-policies:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/RepositoryIdPath'
+      - name: include_deleted
+        in: query
+        schema: { type: boolean, default: false }
+        description: Also list deleted policies, for recovery.
+    get:
+      operationId: listFieldPolicies
+      summary: List a repository's field policies and unmapped keys
+      description: |
+        Owner/Admin only.
+
+        Policies are keyed per repository: the same metadata key in two repositories is
+        two separate entitlements. `unmapped_keys` are keys CI has sent that no live
+        policy covers — admin-only until mapped.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The repository's policies and unmapped keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldPolicyListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/repos/{repositoryId}/field-policies/{fieldClass}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/RepositoryIdPath'
+      - $ref: '#/components/parameters/ClassWideFieldClass'
+    put:
+      operationId: setClassFieldPolicy
+      summary: Set the groups that may read all built-in or all sys_ fields
+      description: |
+        Owner/Admin only. Replaces the groups for this entitlement, creating the policy or reviving a deleted one. Idempotent.
+
+        The request is a write by an admin only; a workload token can never reach it.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetFieldPolicyRequest' }
+      responses:
+        '200':
+          description: Policy set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldPolicyResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      operationId: deleteClassFieldPolicy
+      summary: Remove the built-in or sys_ policy (admin-only again)
+      description: |
+        Owner/Admin only. The policy is soft-deleted and can be restored; a deleted policy behaves exactly like none.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Policy removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/repos/{repositoryId}/field-policies/{fieldClass}/restore:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/RepositoryIdPath'
+      - $ref: '#/components/parameters/ClassWideFieldClass'
+    post:
+      operationId: restoreClassFieldPolicy
+      summary: Restore a deleted built-in or sys_ policy
+      description: |
+        Owner/Admin only.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Policy restored with its previous groups.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldPolicyResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/repos/{repositoryId}/field-policies/metadata/{fieldKey}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/RepositoryIdPath'
+      - $ref: '#/components/parameters/FieldKey'
+    put:
+      operationId: setMetadataFieldPolicy
+      summary: Set the groups that may read one metadata key
+      description: |
+        Owner/Admin only. Replaces the groups for this entitlement, creating the policy or reviving a deleted one. Idempotent.
+
+        The request is a write by an admin only; a workload token can never reach it.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetFieldPolicyRequest' }
+      responses:
+        '200':
+          description: Policy set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldPolicyResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      operationId: deleteMetadataFieldPolicy
+      summary: Remove a metadata key's policy (admin-only again)
+      description: |
+        Owner/Admin only. The policy is soft-deleted and can be restored.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Policy removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/orgs/{slug}/repos/{repositoryId}/field-policies/metadata/{fieldKey}/restore:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/RepositoryIdPath'
+      - $ref: '#/components/parameters/FieldKey'
+    post:
+      operationId: restoreMetadataFieldPolicy
+      summary: Restore a deleted metadata key policy
+      description: |
+        Owner/Admin only.
+      tags: [access]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Policy restored with its previous groups.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldPolicyResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/orgs/{slug}/organization:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -1235,6 +1651,38 @@ components:
       required: true
       schema: { type: string }
       description: The organization's URL slug.
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      schema: { type: string }
+      description: Opaque WorkOS group id (`group_...`).
+    RepositoryIdPath:
+      name: repositoryId
+      in: path
+      required: true
+      schema: { type: string }
+      description: |
+        The provider's stable repository id (`Repository.repository_id`), the
+        same identity `listBuilds`'s `repository_id` filter uses.
+    ClassWideFieldClass:
+      name: fieldClass
+      in: path
+      required: true
+      schema: { type: string, enum: [builtin, sys] }
+      description: |
+        `builtin` — all fixed build columns, one entitlement; `sys` — all
+        server-stamped `sys_` metadata, one entitlement. Customer metadata keys
+        have their own path (`.../field-policies/metadata/{fieldKey}`).
+    FieldKey:
+      name: fieldKey
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+        pattern: '^[A-Za-z0-9_.-]+$'
+      description: A customer metadata key.
     Cursor:
       name: cursor
       in: query
@@ -1277,6 +1725,15 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     UnprocessableEntity:
       description: Well-formed request that violates a documented constraint.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    GroupsUnavailable:
+      description: |
+        `error.code: groups_unavailable` — the caller's group membership could not
+        be determined (WorkOS is unreachable and no cached set exists), so the
+        server refuses to guess a narrower or wider view. Retry shortly. Admins
+        never see this: they skip the group lookup.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1349,10 +1806,13 @@ components:
         would destabilize the wire type under the compatibility window, hurt
         queryability, and invite this field to become a blob store.
 
-        **Always authenticated-tier only.** Customers place arbitrary content here,
-        and the two-tier disclosure model depends on knowing exactly what is public,
-        so these values never appear in the unauthenticated resolution page or its OG
-        tags. There is no per-key public opt-in in v1.
+        **Never public, and gated per key for signed-in readers.** Customers place
+        arbitrary content here, and the disclosure model depends on knowing exactly
+        what is public, so these values never appear in the unauthenticated
+        resolution page or its OG tags. For a signed-in reader, a key is returned
+        only if one of the reader's groups is mapped to it for that repository
+        (`FieldPolicy`); a key the reader cannot read is omitted entirely, so its
+        existence cannot be detected. A key nobody has mapped is admin-only.
 
         Keys beginning `sys_` (matched case-insensitively) are reserved and
         rejected: the prefix is the namespace for server-stamped keys, so a key
@@ -1439,17 +1899,13 @@ components:
         a preview useful and confirm the link is a real Driftmapper build link,
         and nothing more.
 
-        Deliberately excludes committer, author, internal repository path, and all
-        custom metadata. This tier matches the disclosure boundary teams already have
+        Deliberately excludes the repository name (DRFT-40, DRFT-171), committer,
+        author, internal repository path, and all custom metadata. This tier matches the disclosure boundary teams already have
         with a plain public build-info file, so nothing that is public today becomes
         private and nothing private today becomes public.
-      required: [build_instance_id, repository_name, built_at]
+      required: [build_instance_id, built_at]
       properties:
         build_instance_id: { type: string }
-        repository_name:
-          type: string
-          description: |
-            Short repository name only — never the full internal path.
         built_at: { type: string, format: date-time }
 
     Build:
@@ -1530,6 +1986,191 @@ components:
       required: [data]
       properties:
         data: { $ref: '#/components/schemas/BuildListPayload' }
+
+    BuildView:
+      type: object
+      description: |
+        A build **projected for one reader** (DRFT-169): `Build` with every field
+        the reader's groups may not read removed. This is what `getBuild` and
+        `listBuilds` return; `registerBuild` keeps returning the full `Build` to the
+        workload that submitted it.
+
+        Only `build_instance_id` and `built_at` are always present — the fixed
+        public tier (DRFT-40), which sits outside the policies. Every other field
+        is optional, and **absence means "not readable by you or not present",
+        never distinguishable**: clients must not infer that a field exists, was
+        hidden, or is empty from its absence. Which fields appear depends on the
+        reader — admins (Owner/Admin) see all; others see the built-in columns only
+        if one of their groups holds the repository's `builtin` entitlement, `sys_`
+        metadata only with the `sys` entitlement, and each customer metadata key
+        only if mapped. A member with no entitlements sees just the two required
+        fields.
+      required: [build_instance_id, built_at]
+      properties:
+        build_instance_id:
+          type: string
+          description: Opaque and server-issued; see `Build.build_instance_id`.
+        built_at: { type: string, format: date-time }
+        repository_id: { type: string }
+        repository_name: { type: string }
+        repository_path: { type: string }
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        provider:
+          $ref: '#/components/schemas/Provider'
+        commit_sha: { type: string }
+        commit_author: { type: string }
+        commit_committer: { type: string }
+        ref: { type: string }
+        workflow: { type: string }
+        run_id: { type: string }
+        run_attempt: { type: string }
+        trigger_event: { type: string }
+        registered_at: { type: string, format: date-time }
+        resolution_url: { type: string, format: uri }
+        metadata: { $ref: '#/components/schemas/BuildMetadata' }
+
+    BuildViewResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/BuildView' }
+
+    BuildViewListPayload:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/BuildView' }
+        page: { $ref: '#/components/schemas/PageInfo' }
+
+    BuildViewListResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/BuildViewListPayload' }
+
+    Group:
+      type: object
+      description: |
+        A WorkOS native group (org-level, outside any repository). The built-in
+        Everyone group is not listed or editable: it is implicit, selectable in a
+        policy as the id `everyone`, and contains every active member.
+      required: [id, name]
+      properties:
+        id: { type: string, description: Opaque WorkOS group id (`group_...`). }
+        name: { type: string }
+        description: { type: string }
+
+    GroupResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Group' }
+
+    GroupListPayload:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Group' }
+
+    GroupListResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/GroupListPayload' }
+
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 256 }
+
+    UpdateGroupRequest:
+      type: object
+      description: Full replace of `name` and `description`; an omitted description clears it.
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 256 }
+
+    GroupMembersPayload:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MemberWithUser' }
+
+    GroupMembersResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/GroupMembersPayload' }
+
+    FieldPolicy:
+      type: object
+      description: |
+        Which groups may read one entitlement of one repository's builds. A field
+        with no live policy is admin-only (default deny); "no groups" is never
+        stored — remove the policy instead. A deleted policy behaves exactly like
+        none and can be restored.
+      required: [field_class, group_ids]
+      properties:
+        field_class:
+          type: string
+          enum: [builtin, sys, metadata]
+        field_key:
+          type: string
+          description: The metadata key. Present only when `field_class` is `metadata`.
+        group_ids:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: WorkOS group ids, and/or `everyone` for the built-in Everyone group.
+        deleted_at:
+          type: string
+          format: date-time
+          description: Set only on a deleted policy (listed only with `include_deleted`).
+
+    FieldPolicyListPayload:
+      type: object
+      required: [items, unmapped_keys]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/FieldPolicy' }
+        unmapped_keys:
+          type: array
+          items: { type: string }
+          description: |
+            Metadata keys this repository's builds have carried that have no live
+            policy — admin-only until an admin assigns groups.
+
+    FieldPolicyListResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/FieldPolicyListPayload' }
+
+    FieldPolicyResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/FieldPolicy' }
+
+    SetFieldPolicyRequest:
+      type: object
+      required: [group_ids]
+      properties:
+        group_ids:
+          type: array
+          minItems: 1
+          items: { type: string }
 
     RepositoryAuthorizeRequest:
       type: object

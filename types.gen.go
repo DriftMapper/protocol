@@ -100,6 +100,27 @@ func (e ChallengeIssuedStatus) Valid() bool {
 	}
 }
 
+// Defines values for FieldPolicyFieldClass.
+const (
+	FieldPolicyFieldClassBuiltin  FieldPolicyFieldClass = "builtin"
+	FieldPolicyFieldClassMetadata FieldPolicyFieldClass = "metadata"
+	FieldPolicyFieldClassSys      FieldPolicyFieldClass = "sys"
+)
+
+// Valid indicates whether the value is a known member of the FieldPolicyFieldClass enum.
+func (e FieldPolicyFieldClass) Valid() bool {
+	switch e {
+	case FieldPolicyFieldClassBuiltin:
+		return true
+	case FieldPolicyFieldClassMetadata:
+		return true
+	case FieldPolicyFieldClassSys:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MemberWithUserRole.
 const (
 	MemberWithUserRoleAdmin  MemberWithUserRole = "admin"
@@ -250,6 +271,24 @@ func (e Visibility) Valid() bool {
 	case Private:
 		return true
 	case Public:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClassWideFieldClass.
+const (
+	ClassWideFieldClassBuiltin ClassWideFieldClass = "builtin"
+	ClassWideFieldClassSys     ClassWideFieldClass = "sys"
+)
+
+// Valid indicates whether the value is a known member of the ClassWideFieldClass enum.
+func (e ClassWideFieldClass) Valid() bool {
+	switch e {
+	case ClassWideFieldClassBuiltin:
+		return true
+	case ClassWideFieldClassSys:
 		return true
 	default:
 		return false
@@ -412,10 +451,13 @@ type Build struct {
 	// would destabilize the wire type under the compatibility window, hurt
 	// queryability, and invite this field to become a blob store.
 	//
-	// **Always authenticated-tier only.** Customers place arbitrary content here,
-	// and the two-tier disclosure model depends on knowing exactly what is public,
-	// so these values never appear in the unauthenticated resolution page or its OG
-	// tags. There is no per-key public opt-in in v1.
+	// **Never public, and gated per key for signed-in readers.** Customers place
+	// arbitrary content here, and the disclosure model depends on knowing exactly
+	// what is public, so these values never appear in the unauthenticated
+	// resolution page or its OG tags. For a signed-in reader, a key is returned
+	// only if one of the reader's groups is mapped to it for that repository
+	// (`FieldPolicy`); a key the reader cannot read is omitted entirely, so its
+	// existence cannot be detected. A key nobody has mapped is admin-only.
 	//
 	// Keys beginning `sys_` (matched case-insensitively) are reserved and
 	// rejected: the prefix is the namespace for server-stamped keys, so a key
@@ -482,10 +524,13 @@ type BuildListResponse struct {
 // would destabilize the wire type under the compatibility window, hurt
 // queryability, and invite this field to become a blob store.
 //
-// **Always authenticated-tier only.** Customers place arbitrary content here,
-// and the two-tier disclosure model depends on knowing exactly what is public,
-// so these values never appear in the unauthenticated resolution page or its OG
-// tags. There is no per-key public opt-in in v1.
+// **Never public, and gated per key for signed-in readers.** Customers place
+// arbitrary content here, and the disclosure model depends on knowing exactly
+// what is public, so these values never appear in the unauthenticated
+// resolution page or its OG tags. For a signed-in reader, a key is returned
+// only if one of the reader's groups is mapped to it for that repository
+// (`FieldPolicy`); a key the reader cannot read is omitted entirely, so its
+// existence cannot be detected. A key nobody has mapped is admin-only.
 //
 // Keys beginning `sys_` (matched case-insensitively) are reserved and
 // rejected: the prefix is the namespace for server-stamped keys, so a key
@@ -502,16 +547,13 @@ type BuildMetadata map[string]string
 // a preview useful and confirm the link is a real Driftmapper build link,
 // and nothing more.
 //
-// Deliberately excludes committer, author, internal repository path, and all
-// custom metadata. This tier matches the disclosure boundary teams already have
+// Deliberately excludes the repository name (DRFT-40, DRFT-171), committer,
+// author, internal repository path, and all custom metadata. This tier matches the disclosure boundary teams already have
 // with a plain public build-info file, so nothing that is public today becomes
 // private and nothing private today becomes public.
 type BuildPublic struct {
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
-
-	// RepositoryName Short repository name only — never the full internal path.
-	RepositoryName string `json:"repository_name"`
 }
 
 // BuildRegistration The `registerBuild` request body. DRFT-129 relaxed spec §2.2a's original
@@ -545,10 +587,13 @@ type BuildRegistration struct {
 	// would destabilize the wire type under the compatibility window, hurt
 	// queryability, and invite this field to become a blob store.
 	//
-	// **Always authenticated-tier only.** Customers place arbitrary content here,
-	// and the two-tier disclosure model depends on knowing exactly what is public,
-	// so these values never appear in the unauthenticated resolution page or its OG
-	// tags. There is no per-key public opt-in in v1.
+	// **Never public, and gated per key for signed-in readers.** Customers place
+	// arbitrary content here, and the disclosure model depends on knowing exactly
+	// what is public, so these values never appear in the unauthenticated
+	// resolution page or its OG tags. For a signed-in reader, a key is returned
+	// only if one of the reader's groups is mapped to it for that repository
+	// (`FieldPolicy`); a key the reader cannot read is omitted entirely, so its
+	// existence cannot be detected. A key nobody has mapped is admin-only.
 	//
 	// Keys beginning `sys_` (matched case-insensitively) are reserved and
 	// rejected: the prefix is the namespace for server-stamped keys, so a key
@@ -579,6 +624,108 @@ type BuildRegistration struct {
 type BuildResponse struct {
 	// Data The authenticated disclosure tier — full metadata (spec §2.7).
 	Data Build `json:"data"`
+}
+
+// BuildView A build **projected for one reader** (DRFT-169): `Build` with every field
+// the reader's groups may not read removed. This is what `getBuild` and
+// `listBuilds` return; `registerBuild` keeps returning the full `Build` to the
+// workload that submitted it.
+//
+// Only `build_instance_id` and `built_at` are always present — the fixed
+// public tier (DRFT-40), which sits outside the policies. Every other field
+// is optional, and **absence means "not readable by you or not present",
+// never distinguishable**: clients must not infer that a field exists, was
+// hidden, or is empty from its absence. Which fields appear depends on the
+// reader — admins (Owner/Admin) see all; others see the built-in columns only
+// if one of their groups holds the repository's `builtin` entitlement, `sys_`
+// metadata only with the `sys` entitlement, and each customer metadata key
+// only if mapped. A member with no entitlements sees just the two required
+// fields.
+type BuildView struct {
+	// BuildInstanceId Opaque and server-issued; see `Build.build_instance_id`.
+	BuildInstanceId string    `json:"build_instance_id"`
+	BuiltAt         time.Time `json:"built_at"`
+	CommitAuthor    *string   `json:"commit_author,omitempty"`
+	CommitCommitter *string   `json:"commit_committer,omitempty"`
+	CommitSha       *string   `json:"commit_sha,omitempty"`
+
+	// Metadata Free-form organization-defined fields (owning team, ticket reference,
+	// environment label). Flat string-to-string by design (spec §2.2a): nesting
+	// would destabilize the wire type under the compatibility window, hurt
+	// queryability, and invite this field to become a blob store.
+	//
+	// **Never public, and gated per key for signed-in readers.** Customers place
+	// arbitrary content here, and the disclosure model depends on knowing exactly
+	// what is public, so these values never appear in the unauthenticated
+	// resolution page or its OG tags. For a signed-in reader, a key is returned
+	// only if one of the reader's groups is mapped to it for that repository
+	// (`FieldPolicy`); a key the reader cannot read is omitted entirely, so its
+	// existence cannot be detected. A key nobody has mapped is admin-only.
+	//
+	// Keys beginning `sys_` (matched case-insensitively) are reserved and
+	// rejected: the prefix is the namespace for server-stamped keys, so a key
+	// under it means the server set it, never the customer's pipeline. The name
+	// is deliberately brand-neutral (DRFT-181). The reserved-prefix rule is
+	// enforced in server code rather than expressed in the `pattern` below: the
+	// natural expression is a negative lookahead, which Go's RE2 engine cannot
+	// compile, so encoding it here would produce a schema the server cannot
+	// mechanically enforce.
+	Metadata *BuildMetadata `json:"metadata,omitempty"`
+
+	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
+	// additive registry entries and appear here as new enum members (spec §4.4).
+	// Clients MUST tolerate unknown values in responses.
+	//
+	// `github` is the issuer registry entry name (`internal/oidc.GitHubActionsProviderName`
+	// server-side), not a literal "GitHub Actions" spelling — matches what every
+	// `provider`/`claims.Issuer` value on the wire actually contains.
+	Provider       *Provider  `json:"provider,omitempty"`
+	Ref            *string    `json:"ref,omitempty"`
+	RegisteredAt   *time.Time `json:"registered_at,omitempty"`
+	RepositoryId   *string    `json:"repository_id,omitempty"`
+	RepositoryName *string    `json:"repository_name,omitempty"`
+	RepositoryPath *string    `json:"repository_path,omitempty"`
+	ResolutionUrl  *string    `json:"resolution_url,omitempty"`
+	RunAttempt     *string    `json:"run_attempt,omitempty"`
+	RunId          *string    `json:"run_id,omitempty"`
+	TriggerEvent   *string    `json:"trigger_event,omitempty"`
+
+	// Visibility Derived from the `repository_visibility` OIDC claim, never client-supplied.
+	// Repository binding is unlimited and unmetered on every plan (DRFT-72/117);
+	// this claim has no billing role.
+	Visibility *Visibility `json:"visibility,omitempty"`
+	Workflow   *string     `json:"workflow,omitempty"`
+}
+
+// BuildViewListPayload defines model for BuildViewListPayload.
+type BuildViewListPayload struct {
+	Items []BuildView `json:"items"`
+	Page  PageInfo    `json:"page"`
+}
+
+// BuildViewListResponse defines model for BuildViewListResponse.
+type BuildViewListResponse struct {
+	Data BuildViewListPayload `json:"data"`
+}
+
+// BuildViewResponse defines model for BuildViewResponse.
+type BuildViewResponse struct {
+	// Data A build **projected for one reader** (DRFT-169): `Build` with every field
+	// the reader's groups may not read removed. This is what `getBuild` and
+	// `listBuilds` return; `registerBuild` keeps returning the full `Build` to the
+	// workload that submitted it.
+	//
+	// Only `build_instance_id` and `built_at` are always present — the fixed
+	// public tier (DRFT-40), which sits outside the policies. Every other field
+	// is optional, and **absence means "not readable by you or not present",
+	// never distinguishable**: clients must not infer that a field exists, was
+	// hidden, or is empty from its absence. Which fields appear depends on the
+	// reader — admins (Owner/Admin) see all; others see the built-in columns only
+	// if one of their groups holds the repository's `builtin` entitlement, `sys_`
+	// metadata only with the `sys` entitlement, and each customer metadata key
+	// only if mapped. A member with no entitlements sees just the two required
+	// fields.
+	Data BuildView `json:"data"`
 }
 
 // Challenge defines model for Challenge.
@@ -746,6 +893,12 @@ type CreateChallengeRequest struct {
 	Name *string `json:"name,omitempty"`
 }
 
+// CreateGroupRequest defines model for CreateGroupRequest.
+type CreateGroupRequest struct {
+	Description *string `json:"description,omitempty"`
+	Name        string  `json:"name"`
+}
+
 // Error The `error` half of the response envelope (see "Response envelope" above).
 // Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
 // actually emits (`internal/api/respond.go`'s `errorBody`).
@@ -781,6 +934,87 @@ type ErrorEnvelope struct {
 	// Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
 	// actually emits (`internal/api/respond.go`'s `errorBody`).
 	Error Error `json:"error"`
+}
+
+// FieldPolicy Which groups may read one entitlement of one repository's builds. A field
+// with no live policy is admin-only (default deny); "no groups" is never
+// stored — remove the policy instead. A deleted policy behaves exactly like
+// none and can be restored.
+type FieldPolicy struct {
+	// DeletedAt Set only on a deleted policy (listed only with `include_deleted`).
+	DeletedAt  *time.Time            `json:"deleted_at,omitempty"`
+	FieldClass FieldPolicyFieldClass `json:"field_class"`
+
+	// FieldKey The metadata key. Present only when `field_class` is `metadata`.
+	FieldKey *string `json:"field_key,omitempty"`
+
+	// GroupIds WorkOS group ids, and/or `everyone` for the built-in Everyone group.
+	GroupIds []string `json:"group_ids"`
+}
+
+// FieldPolicyFieldClass defines model for FieldPolicy.FieldClass.
+type FieldPolicyFieldClass string
+
+// FieldPolicyListPayload defines model for FieldPolicyListPayload.
+type FieldPolicyListPayload struct {
+	Items []FieldPolicy `json:"items"`
+
+	// UnmappedKeys Metadata keys this repository's builds have carried that have no live
+	// policy — admin-only until an admin assigns groups.
+	UnmappedKeys []string `json:"unmapped_keys"`
+}
+
+// FieldPolicyListResponse defines model for FieldPolicyListResponse.
+type FieldPolicyListResponse struct {
+	Data FieldPolicyListPayload `json:"data"`
+}
+
+// FieldPolicyResponse defines model for FieldPolicyResponse.
+type FieldPolicyResponse struct {
+	// Data Which groups may read one entitlement of one repository's builds. A field
+	// with no live policy is admin-only (default deny); "no groups" is never
+	// stored — remove the policy instead. A deleted policy behaves exactly like
+	// none and can be restored.
+	Data FieldPolicy `json:"data"`
+}
+
+// Group A WorkOS native group (org-level, outside any repository). The built-in
+// Everyone group is not listed or editable: it is implicit, selectable in a
+// policy as the id `everyone`, and contains every active member.
+type Group struct {
+	Description *string `json:"description,omitempty"`
+
+	// Id Opaque WorkOS group id (`group_...`).
+	Id   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// GroupListPayload defines model for GroupListPayload.
+type GroupListPayload struct {
+	Items []Group `json:"items"`
+}
+
+// GroupListResponse defines model for GroupListResponse.
+type GroupListResponse struct {
+	Data GroupListPayload `json:"data"`
+}
+
+// GroupMembersPayload defines model for GroupMembersPayload.
+type GroupMembersPayload struct {
+	Items []MemberWithUser `json:"items"`
+}
+
+// GroupMembersResponse defines model for GroupMembersResponse.
+type GroupMembersResponse struct {
+	Data GroupMembersPayload `json:"data"`
+}
+
+// GroupResponse defines model for GroupResponse.
+type GroupResponse struct {
+	// Data A WorkOS native group (org-level, outside any repository). The built-in
+	// Everyone group is not listed or editable: it is implicit, selectable in a
+	// policy as the id `everyone`, and contains every active member.
+	Data Group `json:"data"`
 }
 
 // Invite defines model for Invite.
@@ -1107,6 +1341,17 @@ type RepositoryListResponse struct {
 	Data RepositoryListPayload `json:"data"`
 }
 
+// SetFieldPolicyRequest defines model for SetFieldPolicyRequest.
+type SetFieldPolicyRequest struct {
+	GroupIds []string `json:"group_ids"`
+}
+
+// UpdateGroupRequest Full replace of `name` and `description`; an omitted description clears it.
+type UpdateGroupRequest struct {
+	Description *string `json:"description,omitempty"`
+	Name        string  `json:"name"`
+}
+
 // UpdatePolicyRequest Full-replace on the three constrainable dimensions: omit a property
 // or send it null to leave/set that dimension unconstrained, resubmit
 // the current value for anything you're not changing. No
@@ -1142,8 +1387,17 @@ type Visibility string
 // BuildInstanceId defines model for BuildInstanceId.
 type BuildInstanceId = string
 
+// ClassWideFieldClass defines model for ClassWideFieldClass.
+type ClassWideFieldClass string
+
 // Cursor defines model for Cursor.
 type Cursor = string
+
+// FieldKey defines model for FieldKey.
+type FieldKey = string
+
+// GroupId defines model for GroupId.
+type GroupId = string
 
 // Limit defines model for Limit.
 type Limit = int
@@ -1151,11 +1405,17 @@ type Limit = int
 // OrgSlug defines model for OrgSlug.
 type OrgSlug = string
 
+// RepositoryIdPath defines model for RepositoryIdPath.
+type RepositoryIdPath = string
+
 // BadRequest defines model for BadRequest.
 type BadRequest = ErrorEnvelope
 
 // Forbidden defines model for Forbidden.
 type Forbidden = ErrorEnvelope
+
+// GroupsUnavailable defines model for GroupsUnavailable.
+type GroupsUnavailable = ErrorEnvelope
 
 // NotFound defines model for NotFound.
 type NotFound = ErrorEnvelope
@@ -1250,6 +1510,12 @@ type ListReposParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ListFieldPoliciesParams defines parameters for ListFieldPolicies.
+type ListFieldPoliciesParams struct {
+	// IncludeDeleted Also list deleted policies, for recovery.
+	IncludeDeleted *bool `form:"include_deleted,omitempty" json:"include_deleted,omitempty"`
+}
+
 // UpdateEmailNotificationsJSONRequestBody defines body for UpdateEmailNotifications for application/json ContentType.
 type UpdateEmailNotificationsJSONRequestBody UpdateEmailNotificationsJSONBody
 
@@ -1274,6 +1540,12 @@ type StartOrgCheckoutJSONRequestBody StartOrgCheckoutJSONBody
 // CreateChallengeJSONRequestBody defines body for CreateChallenge for application/json ContentType.
 type CreateChallengeJSONRequestBody = CreateChallengeRequest
 
+// CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
+type CreateGroupJSONRequestBody = CreateGroupRequest
+
+// UpdateGroupJSONRequestBody defines body for UpdateGroup for application/json ContentType.
+type UpdateGroupJSONRequestBody = UpdateGroupRequest
+
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody InviteMemberJSONBody
 
@@ -1282,6 +1554,12 @@ type ChangeMemberRoleJSONRequestBody ChangeMemberRoleJSONBody
 
 // UpdatePolicyJSONRequestBody defines body for UpdatePolicy for application/json ContentType.
 type UpdatePolicyJSONRequestBody = UpdatePolicyRequest
+
+// SetMetadataFieldPolicyJSONRequestBody defines body for SetMetadataFieldPolicy for application/json ContentType.
+type SetMetadataFieldPolicyJSONRequestBody = SetFieldPolicyRequest
+
+// SetClassFieldPolicyJSONRequestBody defines body for SetClassFieldPolicy for application/json ContentType.
+type SetClassFieldPolicyJSONRequestBody = SetFieldPolicyRequest
 
 // AuthorizeRepositoryJSONRequestBody defines body for AuthorizeRepository for application/json ContentType.
 type AuthorizeRepositoryJSONRequestBody = RepositoryAuthorizeRequest
