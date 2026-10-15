@@ -247,17 +247,19 @@ paths:
         What the token cannot prove stays declared by the pipeline: `commit_author`,
         `commit_committer`, `built_at` and custom `metadata`.
 
-        **Idempotency (spec §2.5a).** The build-instance ID is content-addressed over
-        the tuple:
+        **Identity and idempotency (DRFT-188).** A build is a module at a commit. An
+        app is made of modules; a module lives in one repository, and a repository can
+        hold several modules. The build-instance ID is derived from the module and
+        `commit_sha`, so registering the same module at the same commit again — a
+        retry or a re-run — returns the existing build with `200`. The run, attempt
+        and workflow of each registration are kept as history on the build. Two
+        modules registered from one run get two builds. This assumes deterministic
+        builds: the same commit produces the same artifact.
 
-            repository_id + commit_sha + ref + workflow + run_id + run_attempt
-
-        A retried step within the same run attempt therefore resolves to the same ID
-        and returns `200` — safe to retry on network failure without creating a
-        duplicate. A manual re-run increments `run_attempt` and produces a new ID,
-        which is correct: it is a genuinely distinct build instance. Note that
-        `commit_sha` alone is insufficient, since the same commit legitimately builds
-        many times.
+        `app` and `module` name what is being registered. Both are created the first
+        time CI registers them. A module is bound to the repository that first
+        registered it; another repository registering the same module is rejected
+        with `claim_mismatch`.
 
         Registration requires the repository to already carry a live trusted-
         workload policy (spec §4.5) — bind the repository first via
@@ -1395,6 +1397,20 @@ components:
           description: |
             `owner/name`. Confirmed against the token's verified repository
             claim; see this schema's own description.
+        app:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            The app this build belongs to. Defaults to the repository name. Created
+            on first registration.
+        module:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            The module within the app. Defaults to the app name, so a single-module
+            app needs no change. Bound to the repository that first registered it.
         ref:
           type: string
           maxLength: 256
@@ -1457,6 +1473,8 @@ components:
       description: The authenticated disclosure tier — full metadata (spec §2.7).
       required:
         - build_instance_id
+        - app
+        - module
         - repository_id
         - repository_name
         - visibility
@@ -1469,9 +1487,11 @@ components:
         build_instance_id:
           type: string
           description: |
-            Opaque and server-issued. Content-addressed over the tuple documented
-            on `registerBuild`. Clients MUST treat this as opaque and MUST NOT
+            Opaque and server-issued. Content-addressed over the module and commit
+            documented on `registerBuild`. Clients MUST treat this as opaque and MUST NOT
             parse it — the derivation is an implementation detail that may change.
+        app: { type: string }
+        module: { type: string }
         repository_id:
           type: string
           description: |
@@ -1495,9 +1515,9 @@ components:
           type: string
           description: |
             A passthrough OIDC claim value (GitHub's `run_attempt` claim is itself a
-            string), never parsed or compared numerically server-side — only used as
-            one input to the content-address tuple (spec §2.5a). Typed as a string
-            rather than `integer` for that reason.
+            string), never parsed or compared numerically server-side. Typed as a string
+            rather than `integer` for that reason. The run, attempt and workflow
+            shown are those of the first registration; later ones are history.
         trigger_event: { type: string }
         built_at: { type: string, format: date-time }
         registered_at: { type: string, format: date-time }

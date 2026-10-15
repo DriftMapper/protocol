@@ -398,8 +398,10 @@ type AdminResetStepStatus string
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
-	// BuildInstanceId Opaque and server-issued. Content-addressed over the tuple documented
-	// on `registerBuild`. Clients MUST treat this as opaque and MUST NOT
+	App string `json:"app"`
+
+	// BuildInstanceId Opaque and server-issued. Content-addressed over the module and commit
+	// documented on `registerBuild`. Clients MUST treat this as opaque and MUST NOT
 	// parse it — the derivation is an implementation detail that may change.
 	BuildInstanceId string    `json:"build_instance_id"`
 	BuiltAt         time.Time `json:"built_at"`
@@ -426,6 +428,7 @@ type Build struct {
 	// compile, so encoding it here would produce a schema the server cannot
 	// mechanically enforce.
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
+	Module   string         `json:"module"`
 
 	// Provider CI provider identity. v1 supports GitHub Actions only; further providers are
 	// additive registry entries and appear here as new enum members (spec §4.4).
@@ -452,9 +455,9 @@ type Build struct {
 	ResolutionUrl *string `json:"resolution_url,omitempty"`
 
 	// RunAttempt A passthrough OIDC claim value (GitHub's `run_attempt` claim is itself a
-	// string), never parsed or compared numerically server-side — only used as
-	// one input to the content-address tuple (spec §2.5a). Typed as a string
-	// rather than `integer` for that reason.
+	// string), never parsed or compared numerically server-side. Typed as a string
+	// rather than `integer` for that reason. The run, attempt and workflow
+	// shown are those of the first registration; later ones are history.
 	RunAttempt   *string `json:"run_attempt,omitempty"`
 	RunId        *string `json:"run_id,omitempty"`
 	TriggerEvent *string `json:"trigger_event,omitempty"`
@@ -528,6 +531,9 @@ type BuildPublic struct {
 // claims-derived repository, not the submitted one. `ref` is informational
 // only; the token's own `ref` claim remains authoritative.
 type BuildRegistration struct {
+	// App The app this build belongs to. Defaults to the repository name. Created
+	// on first registration.
+	App     *string   `json:"app,omitempty"`
 	BuiltAt time.Time `json:"built_at"`
 
 	// CommitAuthor Normalized by the CLI from provider-specific build context.
@@ -559,6 +565,10 @@ type BuildRegistration struct {
 	// compile, so encoding it here would produce a schema the server cannot
 	// mechanically enforce.
 	Metadata *BuildMetadata `json:"metadata,omitempty"`
+
+	// Module The module within the app. Defaults to the app name, so a single-module
+	// app needs no change. Bound to the repository that first registered it.
+	Module *string `json:"module,omitempty"`
 
 	// Ref Git ref, e.g. `refs/heads/main`. Read directly from git by the CLI
 	// (`internal/gitcontext`). Informational; the token's `ref` claim is
