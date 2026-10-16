@@ -326,6 +326,11 @@ paths:
       operationId: getBuild
       summary: Fetch one build by its build-instance ID
       description: |
+        **Not implemented, and not to be implemented flat (DRFT-176).** A build is
+        visible only to callers who can access its app, so a build id alone cannot be
+        authorized; a single-build read belongs under `/v1/orgs/{slug}/apps/{appID}/builds`.
+        Kept only until the dashboard stops referencing it.
+
         This is the JSON equivalent of the authenticated tier of the resolution page.
         There is no unauthenticated variant of this endpoint: the public tier exists
         only as server-rendered HTML and OG tags (spec §2.7).
@@ -548,19 +553,23 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
-  /v1/orgs/{slug}/builds:
+  /v1/orgs/{slug}/apps/{appID}/builds:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
+      - name: appID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
     get:
-      operationId: listBuilds
-      summary: List builds for one organization
+      operationId: listAppBuilds
+      summary: List the builds of one app
       description: |
-        Org-scoped by URL, same convention as every other dashboard-tier list in this
-        API — there is no session-tracked "current org" a flat path could resolve
-        against, and a user may belong to more than one. Unrelated to
-        `POST /v1/builds` (`registerBuild`), which stays flat: a workload OIDC token
-        has no org/slug context at registration time, and the server resolves the
-        owning org from the repository's authorization instead.
+        Full build detail, so the caller must be able to access the app: an
+        admin or owner, or a member in a group the app is granted to. Any other
+        caller gets 404, the same as an app that does not exist (DRFT-176). A
+        build list that spans apps does not exist; this is the only list of
+        builds. Unrelated to `POST /v1/builds` (`registerBuild`), which stays
+        flat: a workload OIDC token has no org context at registration time.
       tags: [builds]
       x-stability: dashboard
       security:
@@ -596,6 +605,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
 
   /v1/orgs/{slug}/repos:
     parameters:
@@ -603,6 +614,9 @@ paths:
     get:
       operationId: listRepos
       summary: List confirmed repositories for one organization
+      description: |
+        Admin or owner only: repository and CI onboarding is administration, and a
+        repository's name often gives away an app's (DRFT-176).
       tags: [repos]
       x-stability: dashboard
       security:
@@ -695,6 +709,9 @@ paths:
       operationId: listChallenges
       summary: List this organization's challenges
       description: |
+        Admin or owner only (DRFT-176): repository and CI onboarding is
+        administration, and a repository's name often gives away an app's.
+
         Lifecycle visibility for challenges issued via `createChallenge` —
         issued-at, expires-at, redemption/attempt state. **Never includes the
         raw value**, issued or not; that's `createChallenge`'s one-time
@@ -765,6 +782,9 @@ paths:
       operationId: listPolicies
       summary: List an organization's live trusted-workload policies
       description: |
+        Admin or owner only (DRFT-176): repository and CI onboarding is
+        administration, and a repository's name often gives away an app's.
+
         Lifecycle management for policies created by challenge redemption
         (`authorizeRepository`) — DRFT-63. A revoked policy drops off this
         list; build history remains available via `listBuilds` regardless
@@ -1202,10 +1222,14 @@ paths:
       - $ref: '#/components/parameters/OrgSlug'
     get:
       operationId: listApps
-      summary: List the organization's apps
+      summary: List the apps the caller can access
       description: |
-        Admin or owner only. Apps are created the first time CI registers a
-        module of them; this is the list an admin grants groups access to.
+        Admins and owners get every app in the organization, which is also the
+        list they grant groups access to. A member gets only the apps one of
+        their groups is granted (DRFT-176); a member in no granting group gets
+        an empty list. Apps are created the first time CI registers a module
+        of them. If the caller's groups cannot be determined the answer is 503,
+        never a guess.
       tags: [groups]
       x-stability: dashboard
       security:
@@ -1222,6 +1246,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
 
   /v1/orgs/{slug}/groups/{groupID}/apps:
     parameters:
