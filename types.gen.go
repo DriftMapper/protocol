@@ -793,6 +793,44 @@ type ErrorEnvelope struct {
 	Error Error `json:"error"`
 }
 
+// Group defines model for Group.
+type Group struct {
+	// BuiltIn True for Everyone, which cannot be renamed, deleted or have members added.
+	BuiltIn     bool   `json:"built_in"`
+	Description string `json:"description"`
+
+	// Id Opaque WorkOS group id, or `everyone` for the built-in group.
+	Id   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// GroupInput defines model for GroupInput.
+type GroupInput struct {
+	Description *string `json:"description,omitempty"`
+	Name        string  `json:"name"`
+}
+
+// GroupMember defines model for GroupMember.
+type GroupMember struct {
+	Email  string `json:"email"`
+	UserId int64  `json:"user_id"`
+}
+
+// GroupMembersResponse defines model for GroupMembersResponse.
+type GroupMembersResponse struct {
+	Data []GroupMember `json:"data"`
+}
+
+// GroupResponse defines model for GroupResponse.
+type GroupResponse struct {
+	Data Group `json:"data"`
+}
+
+// GroupsResponse defines model for GroupsResponse.
+type GroupsResponse struct {
+	Data []Group `json:"data"`
+}
+
 // Invite defines model for Invite.
 type Invite struct {
 	Email string `json:"email"`
@@ -1155,6 +1193,9 @@ type BuildInstanceId = string
 // Cursor defines model for Cursor.
 type Cursor = string
 
+// GroupID defines model for GroupID.
+type GroupID = string
+
 // Limit defines model for Limit.
 type Limit = int
 
@@ -1166,6 +1207,9 @@ type BadRequest = ErrorEnvelope
 
 // Forbidden defines model for Forbidden.
 type Forbidden = ErrorEnvelope
+
+// GroupsUnavailable defines model for GroupsUnavailable.
+type GroupsUnavailable = ErrorEnvelope
 
 // NotFound defines model for NotFound.
 type NotFound = ErrorEnvelope
@@ -1236,6 +1280,11 @@ type ListChallengesParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// AddGroupMemberJSONBody defines parameters for AddGroupMember.
+type AddGroupMemberJSONBody struct {
+	UserId int64 `json:"user_id"`
+}
+
 // InviteMemberJSONBody defines parameters for InviteMember.
 type InviteMemberJSONBody struct {
 	Email string                   `json:"email"`
@@ -1283,6 +1332,15 @@ type StartOrgCheckoutJSONRequestBody StartOrgCheckoutJSONBody
 
 // CreateChallengeJSONRequestBody defines body for CreateChallenge for application/json ContentType.
 type CreateChallengeJSONRequestBody = CreateChallengeRequest
+
+// CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
+type CreateGroupJSONRequestBody = GroupInput
+
+// UpdateGroupJSONRequestBody defines body for UpdateGroup for application/json ContentType.
+type UpdateGroupJSONRequestBody = GroupInput
+
+// AddGroupMemberJSONRequestBody defines body for AddGroupMember for application/json ContentType.
+type AddGroupMemberJSONRequestBody AddGroupMemberJSONBody
 
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody InviteMemberJSONBody
