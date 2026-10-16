@@ -396,6 +396,17 @@ type AdminResetStep struct {
 // this one.
 type AdminResetStepStatus string
 
+// App defines model for App.
+type App struct {
+	Id   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// AppsResponse defines model for AppsResponse.
+type AppsResponse struct {
+	Data []App `json:"data"`
+}
+
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
 type Build struct {
 	App string `json:"app"`
@@ -802,6 +813,16 @@ type Group struct {
 	// Id Opaque WorkOS group id, or `everyone` for the built-in group.
 	Id   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// GroupApps defines model for GroupApps.
+type GroupApps struct {
+	AppIds []int64 `json:"app_ids"`
+}
+
+// GroupAppsResponse defines model for GroupAppsResponse.
+type GroupAppsResponse struct {
+	Data GroupApps `json:"data"`
 }
 
 // GroupInput defines model for GroupInput.
@@ -1338,6 +1359,9 @@ type CreateGroupJSONRequestBody = GroupInput
 
 // UpdateGroupJSONRequestBody defines body for UpdateGroup for application/json ContentType.
 type UpdateGroupJSONRequestBody = GroupInput
+
+// SetGroupAppsJSONRequestBody defines body for SetGroupApps for application/json ContentType.
+type SetGroupAppsJSONRequestBody = GroupApps
 
 // AddGroupMemberJSONRequestBody defines body for AddGroupMember for application/json ContentType.
 type AddGroupMemberJSONRequestBody AddGroupMemberJSONBody
