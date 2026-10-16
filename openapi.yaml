@@ -141,6 +141,11 @@ tags:
       Organization membership/switching for the signed-in user — which orgs they
       belong to and at what role. Distinct from `billing`, which covers a single
       already-resolved org's plan.
+  - name: groups
+    description: |
+      Admin-only management of an organization's groups and their members
+      (WorkOS native groups plus the built-in Everyone group). Groups are the
+      unit that later grants access to apps.
   - name: billing
     description: Subscription and checkout.
   - name: admin
@@ -990,6 +995,208 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /v1/orgs/{slug}/groups:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+    get:
+      operationId: listGroups
+      summary: List the organization's groups
+      description: |
+        Admin or owner only. Always includes the built-in Everyone group
+        (`built_in: true`, id `everyone`), which every active member belongs to.
+        Other groups are WorkOS native groups; a change made directly in WorkOS
+        shows up here on the next call.
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Groups.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupsResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+    post:
+      operationId: createGroup
+      summary: Create a group
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '201':
+          description: Group created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
+  /v1/orgs/{slug}/groups/{groupID}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/GroupID'
+    patch:
+      operationId: updateGroup
+      summary: Rename a group or change its description
+      description: The built-in Everyone group cannot be changed (422).
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '200':
+          description: Group updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+    delete:
+      operationId: deleteGroup
+      summary: Delete a group
+      description: The built-in Everyone group cannot be deleted (422).
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Group deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
+  /v1/orgs/{slug}/groups/{groupID}/members:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/GroupID'
+    get:
+      operationId: listGroupMembers
+      summary: List a group's members
+      description: |
+        For the built-in Everyone group this is every active member of the
+        organization.
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: Members of the group.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupMembersResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+    post:
+      operationId: addGroupMember
+      summary: Add an organization member to a group
+      description: Membership of the built-in Everyone group is implicit (422).
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer, format: int64 }
+      responses:
+        '204':
+          description: Member added. Adding an existing member is a no-op.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
+  /v1/orgs/{slug}/groups/{groupID}/members/{userID}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - $ref: '#/components/parameters/GroupID'
+      - name: userID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      operationId: removeGroupMember
+      summary: Remove a member from a group
+      description: Membership of the built-in Everyone group is implicit (422).
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: Member removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
   /v1/orgs/{slug}/organization:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -1237,6 +1444,12 @@ components:
       required: true
       schema: { type: string }
       description: The organization's URL slug.
+    GroupID:
+      name: groupID
+      in: path
+      required: true
+      schema: { type: string }
+      description: Opaque group id (a WorkOS `group_...` id, or `everyone` for the built-in group).
     Cursor:
       name: cursor
       in: query
@@ -1279,6 +1492,14 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     UnprocessableEntity:
       description: Well-formed request that violates a documented constraint.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    GroupsUnavailable:
+      description: |
+        Groups could not be read or changed: WorkOS failed or groups are not
+        configured in this environment (`error.code: groups_unavailable` or
+        `workos_disabled`). Retry later.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -1867,6 +2088,51 @@ components:
           required: [email]
           properties:
             email: { type: string }
+
+    Group:
+      type: object
+      required: [id, name, description, built_in]
+      properties:
+        id: { type: string, description: 'Opaque WorkOS group id, or `everyone` for the built-in group.' }
+        name: { type: string }
+        description: { type: string }
+        built_in: { type: boolean, description: 'True for Everyone, which cannot be renamed, deleted or have members added.' }
+
+    GroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+
+    GroupMember:
+      type: object
+      required: [user_id, email]
+      properties:
+        user_id: { type: integer, format: int64 }
+        email: { type: string }
+
+    GroupResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Group' }
+
+    GroupsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Group' }
+
+    GroupMembersResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/GroupMember' }
 
     Invite:
       type: object
