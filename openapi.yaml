@@ -23,13 +23,16 @@ info:
       which deploys in lockstep with the server. Types are generated into the SPA but
       NOT published in the public Go module. Free to change without a major version.
 
-    **The public tier is exactly two operations: `registerBuild` and
-    `authorizeRepository`.** The CLI is a CI-pipeline tool — it writes a build
-    and generates an HTML file from the response. `authorizeRepository` is a
+    **The public tier is exactly three operations: `registerBuild`,
+    `recordDeployment` and `authorizeRepository`.** The CLI is a CI-pipeline
+    tool — it writes a build and generates an HTML file from the response, and
+    it records that a build is now in an environment. `authorizeRepository` is a
     deliberate exception (spec §4.5): redeeming a challenge to bind a
     repository is itself a write (a policy is created), called from the same
     customer CI the CLI already runs in, with the same permanent version-skew
-    exposure as build registration. Every other operation is `dashboard`.
+    exposure as build registration. `recordDeployment` is public for the same
+    reason: it is called from customer CI, so its version skew is permanent from
+    day one. Every other operation is `dashboard`.
 
     Every registered build comes from a CI pipeline: the CI provider's OIDC
     token is the only credential that can register one (DRFT-165 removed the
@@ -37,10 +40,13 @@ info:
     names beside proven ones). A build no trusted pipeline produced is simply
     not registered.
 
-    (DRFT-124 removed the deploy-marking/verification operations —
+    (DRFT-124 removed the first deploy-marking/verification operations —
     `recordDeployment`, `getCurrentDeployment`, `getDeployment`,
-    `recordVerification` — that previously sat in this tier: the product's
-    scope is the build-info file itself, not tracking what's deployed where.)
+    `recordVerification` — from this tier. DRFT-183/185 brings back one of them
+    in a narrower shape: `recordDeployment` is a CI-reported record that a build
+    is in an environment, with the time set by the server. It is a claim by the
+    pipeline, not verification of what is running; there is no verification
+    operation.)
 
     This is deliberately conservative rather than a judgement that these operations
     will never be CLI-facing; a fully featured CLI is an intended later iteration.
@@ -98,7 +104,7 @@ info:
     - `workloadOidc` — a machine principal. The raw OIDC ID token issued by the CI
       provider, presented as a bearer credential. No Driftmapper-issued static token
       exists anywhere in this system (spec §4). This principal reaches exactly the
-      `registerBuild` and `authorizeRepository` operations.
+      `registerBuild`, `recordDeployment` and `authorizeRepository` operations.
     - `userSession` — a human principal, via the WorkOS AuthKit session cookie
       (spec §4A) for the dashboard SPA, or a bearer access-token JWT minted by
       the device-code login (DRFT-30); the server does not distinguish which
@@ -132,6 +138,11 @@ tags:
       tier: the CLI authenticates with `workloadOidc`, never these.
   - name: builds
     description: Build registration and lookup.
+  - name: deployments
+    description: |
+      Records, reported by CI, that a build is now in an environment, and the
+      history those records form. A deployment record is a claim by the pipeline;
+      the server sets its time.
   - name: repos
     description: |
       Repository authorization — binding a repository to an org via
@@ -318,6 +329,98 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/deployments:
+    post:
+      operationId: recordDeployment
+      summary: Record that a build is now in an environment
+      description: |
+        Called by the CLI from the CI job that deploys. Authenticated with a workload
+        OIDC token only, like `registerBuild`. The record is a **claim by the
+        pipeline** that the build is now in the environment; nothing here checks what
+        is actually running.
+
+        **What is recorded.** A build (a module at a commit, see `registerBuild`) in
+        an environment of its app. Records are append-only: a correction is a new
+        record, never an edit. "What is in an environment now" is the newest record
+        and is never stored separately. The time is set by the server on receipt; a
+        client cannot send one, because a skewed runner clock would otherwise pin
+        "current" to the wrong build permanently. Supplying a time field is rejected
+        with `unknown_field`.
+
+        **Which build.** `app` and `module` default exactly as in `registerBuild`.
+        The build is identified by `build_instance_id` when given, or by
+        `commit_sha`, or, when neither is given, by the commit in the verified token
+        (GitHub Actions: `sha`). `build_instance_id` and `commit_sha` are mutually
+        exclusive. The build must already be registered: a deploy job that follows
+        the build job in the same pipeline always satisfies this. Send
+        `build_instance_id` or `commit_sha` when the deploy runs in a workflow whose
+        token commit is not the commit being deployed, for example a promotion, a
+        `workflow_dispatch`, or a `workflow_run`. The ID is in `build-info.html`; how
+        it reaches the deploy job is the pipeline's plumbing.
+
+        **Who may record.** The token's repository must be the repository the module
+        is bound to. Another repository, such as a separate infrastructure repository,
+        is rejected with `claim_mismatch` (`mismatched_claim: module`). The repository
+        must also carry a live trusted-workload policy, as for `registerBuild`.
+
+        **Environments** belong to an app and are created the first time one is
+        recorded. A name is 1 to 63 characters: lowercase letters, digits and
+        hyphens, starting and ending with a letter or digit. Anything else is
+        rejected, not normalized, so `Prod` and `prod` can never become two
+        environments. When the token carries an environment (GitHub Actions:
+        `environment`), that is the environment: `environment` may then be omitted,
+        and a value that differs is rejected with `claim_mismatch`
+        (`mismatched_claim: environment`). When the token carries none,
+        `environment` is required.
+
+        Recording the same build in the same environment from the same run, attempt
+        and workflow again returns the existing record with `200`. A new run or
+        attempt records again with `201`, so a rollback or redeploy shows in the
+        history.
+      tags: [deployments]
+      x-stability: public
+      security:
+        - workloadOidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentRequest'
+      responses:
+        '201':
+          description: Deployment recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '200':
+          description: |
+            Already recorded for this run, attempt and workflow; the existing record
+            is returned unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Token is signature-valid but not authorized to record this deployment:
+            `claim_mismatch` (see `ClaimMismatchDetails`), `policy_revoked`, or
+            `no_live_policy`, as for `registerBuild`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: |
+            Well-formed but not recordable: an invalid environment name, both
+            `build_instance_id` and `commit_sha`, a malformed `url`, or no registered
+            build for the module at that commit (`error.code: build_not_registered`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /v1/builds/{buildInstanceId}:
     parameters:
@@ -1885,6 +1988,87 @@ components:
       required: [data]
       properties:
         data: { $ref: '#/components/schemas/BuildListPayload' }
+
+    DeploymentRequest:
+      type: object
+      description: |
+        The `recordDeployment` request body. There is no field for the time, the
+        repository, the workflow or the run: the time is set by the server and the
+        rest come from the verified token.
+      additionalProperties: false
+      properties:
+        environment:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+          description: |
+            Required unless the token carries an environment, in which case that one is
+            used and a different value is rejected.
+        app:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The app. Defaults to the repository name, as in `registerBuild`.
+        module:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The module. Defaults to the app name, as in `registerBuild`.
+        build_instance_id:
+          type: string
+          description: |
+            The exact build, as written in `build-info.html`. Mutually exclusive with
+            `commit_sha`.
+        commit_sha:
+          type: string
+          minLength: 7
+          maxLength: 64
+          description: |
+            The commit of the build being deployed. Defaults to the token's commit.
+            Mutually exclusive with `build_instance_id`. Taken as declared, not
+            confirmed against the token: the token proves who is recording, not what
+            was deployed.
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: |
+            Where this deployment serves its `build-info` file, an absolute `https` URL.
+            Optional. Lets a later check find the running instance without separate
+            configuration. Declared by the pipeline.
+
+    Deployment:
+      type: object
+      description: |
+        A CI-reported record that a build is in an environment. A claim by the
+        pipeline, not verification of what is running.
+      required:
+        - app
+        - module
+        - environment
+        - build_instance_id
+        - commit_sha
+        - deployed_at
+      properties:
+        app: { type: string }
+        module: { type: string }
+        environment: { type: string }
+        build_instance_id: { type: string }
+        commit_sha: { type: string }
+        url:
+          type: string
+          format: uri
+        deployed_at:
+          type: string
+          format: date-time
+          description: Set by the server when the record was received.
+
+    DeploymentResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Deployment' }
 
     RepositoryAuthorizeRequest:
       type: object

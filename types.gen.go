@@ -767,6 +767,57 @@ type CreateChallengeRequest struct {
 	Name *string `json:"name,omitempty"`
 }
 
+// Deployment A CI-reported record that a build is in an environment. A claim by the
+// pipeline, not verification of what is running.
+type Deployment struct {
+	App             string `json:"app"`
+	BuildInstanceId string `json:"build_instance_id"`
+	CommitSha       string `json:"commit_sha"`
+
+	// DeployedAt Set by the server when the record was received.
+	DeployedAt  time.Time `json:"deployed_at"`
+	Environment string    `json:"environment"`
+	Module      string    `json:"module"`
+	Url         *string   `json:"url,omitempty"`
+}
+
+// DeploymentRequest The `recordDeployment` request body. There is no field for the time, the
+// repository, the workflow or the run: the time is set by the server and the
+// rest come from the verified token.
+type DeploymentRequest struct {
+	// App The app. Defaults to the repository name, as in `registerBuild`.
+	App *string `json:"app,omitempty"`
+
+	// BuildInstanceId The exact build, as written in `build-info.html`. Mutually exclusive with
+	// `commit_sha`.
+	BuildInstanceId *string `json:"build_instance_id,omitempty"`
+
+	// CommitSha The commit of the build being deployed. Defaults to the token's commit.
+	// Mutually exclusive with `build_instance_id`. Taken as declared, not
+	// confirmed against the token: the token proves who is recording, not what
+	// was deployed.
+	CommitSha *string `json:"commit_sha,omitempty"`
+
+	// Environment Required unless the token carries an environment, in which case that one is
+	// used and a different value is rejected.
+	Environment *string `json:"environment,omitempty"`
+
+	// Module The module. Defaults to the app name, as in `registerBuild`.
+	Module *string `json:"module,omitempty"`
+
+	// Url Where this deployment serves its `build-info` file, an absolute `https` URL.
+	// Optional. Lets a later check find the running instance without separate
+	// configuration. Declared by the pipeline.
+	Url *string `json:"url,omitempty"`
+}
+
+// DeploymentResponse defines model for DeploymentResponse.
+type DeploymentResponse struct {
+	// Data A CI-reported record that a build is in an environment. A claim by the
+	// pipeline, not verification of what is running.
+	Data Deployment `json:"data"`
+}
+
 // Error The `error` half of the response envelope (see "Response envelope" above).
 // Not RFC 9457 — a from-scratch shape matching what every `cmd/api` route
 // actually emits (`internal/api/respond.go`'s `errorBody`).
@@ -1341,6 +1392,9 @@ type AdminPlanUserResetJSONRequestBody AdminPlanUserResetJSONBody
 
 // RegisterBuildJSONRequestBody defines body for RegisterBuild for application/json ContentType.
 type RegisterBuildJSONRequestBody = BuildRegistration
+
+// RecordDeploymentJSONRequestBody defines body for RecordDeployment for application/json ContentType.
+type RecordDeploymentJSONRequestBody = DeploymentRequest
 
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody CreateOrgJSONBody
