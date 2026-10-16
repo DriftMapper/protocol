@@ -1271,17 +1271,8 @@ type UpdateOrgJSONBody struct {
 	Name string `json:"name"`
 }
 
-// StartOrgCheckoutJSONBody defines parameters for StartOrgCheckout.
-type StartOrgCheckoutJSONBody struct {
-	// Interval Defaults to monthly when omitted.
-	Interval *StartOrgCheckoutJSONBodyInterval `json:"interval,omitempty"`
-}
-
-// StartOrgCheckoutJSONBodyInterval defines parameters for StartOrgCheckout.
-type StartOrgCheckoutJSONBodyInterval string
-
-// ListBuildsParams defines parameters for ListBuilds.
-type ListBuildsParams struct {
+// ListAppBuildsParams defines parameters for ListAppBuilds.
+type ListAppBuildsParams struct {
 	// RepositoryId Filter to one repository.
 	RepositoryId     *string    `form:"repository_id,omitempty" json:"repository_id,omitempty"`
 	Ref              *string    `form:"ref,omitempty" json:"ref,omitempty"`
@@ -1293,6 +1284,15 @@ type ListBuildsParams struct {
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
+
+// StartOrgCheckoutJSONBody defines parameters for StartOrgCheckout.
+type StartOrgCheckoutJSONBody struct {
+	// Interval Defaults to monthly when omitted.
+	Interval *StartOrgCheckoutJSONBodyInterval `json:"interval,omitempty"`
+}
+
+// StartOrgCheckoutJSONBodyInterval defines parameters for StartOrgCheckout.
+type StartOrgCheckoutJSONBodyInterval string
 
 // ListChallengesParams defines parameters for ListChallenges.
 type ListChallengesParams struct {
