@@ -711,6 +711,114 @@ paths:
         '503':
           $ref: '#/components/responses/GroupsUnavailable'
 
+  /v1/orgs/{slug}/apps/{appID}/environments:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: appID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      operationId: listAppEnvironments
+      summary: What each module of one app is running in each environment
+      description: |
+        One row per module and environment that has at least one deployment record
+        (DRFT-186): the build the newest record names, and when that build last changed.
+        The same caller rule as `listAppBuilds`: an admin or owner, or a member in a
+        group the app is granted to. Any other caller gets 404, the same as an app that
+        does not exist.
+
+        Every row is a **claim by the deploying pipeline** (see `recordDeployment`), not
+        a check of what is running. Rows are ordered by module, then environment. A
+        module with no records in any environment has no row.
+
+        `running_since` is when the *build* last changed: the time of the first record in
+        the unbroken run of records that name the current build. Recording the same build
+        again (a redeploy) moves `last_recorded_at` but not `running_since`; recording an
+        earlier build again (a rollback) starts a new run, so `running_since` moves.
+      tags: [deployments]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The current state of each module and environment of the app.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnvironmentStatesResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
+  /v1/orgs/{slug}/apps/{appID}/modules/{module}/environments/{environment}/deployments:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: appID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: module
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 128 }
+      - name: environment
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 63 }
+    get:
+      operationId: listModuleDeployments
+      summary: Every deployment record of one module in one environment
+      description: |
+        The history behind one row of `listAppEnvironments` (DRFT-186), newest first.
+        The same caller rule as `listAppBuilds`. An unknown module or environment is 404,
+        the same as an app the caller cannot access, so nothing reveals which exist.
+
+        Records are CI-reported claims (see `recordDeployment`), ordered by the time the
+        server received them, then by arrival.
+
+        **What was running at a time.** `deployed_before` keeps only records at or
+        before that instant, so `deployed_before=<time>&limit=1` is the record in effect
+        then: its `build_instance_id`, and `running_since` for how long that build had
+        been running. An empty page means nothing had been recorded by then.
+
+        `changed` is true when the record's build differs from the record before it in
+        the same module and environment (the first record is always a change).
+        `running_since` is the time of the first record in the unbroken run of records
+        that name this record's build, so it is the same for a redeploy as for the
+        deployment that started the run.
+      tags: [deployments]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      parameters:
+        - name: deployed_before
+          in: query
+          schema: { type: string, format: date-time }
+          description: Only records received at or before this instant.
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of deployment records, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentRecordListResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
   /v1/orgs/{slug}/repos:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -2069,6 +2177,106 @@ components:
       required: [data]
       properties:
         data: { $ref: '#/components/schemas/Deployment' }
+
+    EnvironmentState:
+      type: object
+      description: |
+        What one module is running in one environment, as the newest deployment record
+        claims. A claim by the deploying pipeline, not a check of what is running.
+      required:
+        - module
+        - environment
+        - build_instance_id
+        - commit_sha
+        - running_since
+        - last_recorded_at
+      properties:
+        module: { type: string }
+        environment: { type: string }
+        build_instance_id: { type: string }
+        commit_sha: { type: string }
+        running_since:
+          type: string
+          format: date-time
+          description: |
+            When this build last changed: the first record of the unbroken run of
+            records that name it. A redeploy of the same build does not move it.
+        last_recorded_at:
+          type: string
+          format: date-time
+          description: When the newest record was received, a redeploy included.
+        url:
+          type: string
+          format: uri
+          description: Where the newest record says this deployment serves its build-info.
+        resolution_url:
+          type: string
+          format: uri
+          description: The build's resolution page.
+
+    EnvironmentStatesResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/EnvironmentState' }
+
+    DeploymentRecord:
+      type: object
+      description: |
+        One deployment record in the history of a module in an environment. A claim by
+        the deploying pipeline, not a check of what is running. `deployed_at` is when the
+        server received it.
+      required:
+        - build_instance_id
+        - commit_sha
+        - deployed_at
+        - changed
+        - running_since
+        - recorded_by_issuer
+        - recorded_by_subject
+      properties:
+        build_instance_id: { type: string }
+        commit_sha: { type: string }
+        deployed_at: { type: string, format: date-time }
+        changed:
+          type: boolean
+          description: |
+            The build differs from the previous record in this module and environment.
+            True for the first record.
+        running_since:
+          type: string
+          format: date-time
+          description: |
+            The first record of the unbroken run of records that name this record's build.
+        url: { type: string, format: uri }
+        resolution_url: { type: string, format: uri }
+        recorded_by_issuer:
+          type: string
+          description: The issuer registry name of the principal that reported it.
+        recorded_by_subject:
+          type: string
+          description: The token subject of the principal that reported it.
+        ref: { type: string }
+        workflow: { type: string }
+        run_id: { type: string }
+        run_attempt: { type: string }
+
+    DeploymentRecordListPayload:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DeploymentRecord' }
+        page: { $ref: '#/components/schemas/PageInfo' }
+
+    DeploymentRecordListResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/DeploymentRecordListPayload' }
 
     RepositoryAuthorizeRequest:
       type: object
