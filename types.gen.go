@@ -781,6 +781,45 @@ type Deployment struct {
 	Url         *string   `json:"url,omitempty"`
 }
 
+// DeploymentRecord One deployment record in the history of a module in an environment. A claim by
+// the deploying pipeline, not a check of what is running. `deployed_at` is when the
+// server received it.
+type DeploymentRecord struct {
+	BuildInstanceId string `json:"build_instance_id"`
+
+	// Changed The build differs from the previous record in this module and environment.
+	// True for the first record.
+	Changed    bool      `json:"changed"`
+	CommitSha  string    `json:"commit_sha"`
+	DeployedAt time.Time `json:"deployed_at"`
+
+	// RecordedByIssuer The issuer registry name of the principal that reported it.
+	RecordedByIssuer string `json:"recorded_by_issuer"`
+
+	// RecordedBySubject The token subject of the principal that reported it.
+	RecordedBySubject string  `json:"recorded_by_subject"`
+	Ref               *string `json:"ref,omitempty"`
+	ResolutionUrl     *string `json:"resolution_url,omitempty"`
+	RunAttempt        *string `json:"run_attempt,omitempty"`
+	RunId             *string `json:"run_id,omitempty"`
+
+	// RunningSince The first record of the unbroken run of records that name this record's build.
+	RunningSince time.Time `json:"running_since"`
+	Url          *string   `json:"url,omitempty"`
+	Workflow     *string   `json:"workflow,omitempty"`
+}
+
+// DeploymentRecordListPayload defines model for DeploymentRecordListPayload.
+type DeploymentRecordListPayload struct {
+	Items []DeploymentRecord `json:"items"`
+	Page  PageInfo           `json:"page"`
+}
+
+// DeploymentRecordListResponse defines model for DeploymentRecordListResponse.
+type DeploymentRecordListResponse struct {
+	Data DeploymentRecordListPayload `json:"data"`
+}
+
 // DeploymentRequest The `recordDeployment` request body. There is no field for the time, the
 // repository, the workflow or the run: the time is set by the server and the
 // rest come from the verified token.
@@ -816,6 +855,33 @@ type DeploymentResponse struct {
 	// Data A CI-reported record that a build is in an environment. A claim by the
 	// pipeline, not verification of what is running.
 	Data Deployment `json:"data"`
+}
+
+// EnvironmentState What one module is running in one environment, as the newest deployment record
+// claims. A claim by the deploying pipeline, not a check of what is running.
+type EnvironmentState struct {
+	BuildInstanceId string `json:"build_instance_id"`
+	CommitSha       string `json:"commit_sha"`
+	Environment     string `json:"environment"`
+
+	// LastRecordedAt When the newest record was received, a redeploy included.
+	LastRecordedAt time.Time `json:"last_recorded_at"`
+	Module         string    `json:"module"`
+
+	// ResolutionUrl The build's resolution page.
+	ResolutionUrl *string `json:"resolution_url,omitempty"`
+
+	// RunningSince When this build last changed: the first record of the unbroken run of
+	// records that name it. A redeploy of the same build does not move it.
+	RunningSince time.Time `json:"running_since"`
+
+	// Url Where the newest record says this deployment serves its build-info.
+	Url *string `json:"url,omitempty"`
+}
+
+// EnvironmentStatesResponse defines model for EnvironmentStatesResponse.
+type EnvironmentStatesResponse struct {
+	Data []EnvironmentState `json:"data"`
 }
 
 // Error The `error` half of the response envelope (see "Response envelope" above).
@@ -1330,6 +1396,16 @@ type ListAppBuildsParams struct {
 	CommitSha        *string    `form:"commit_sha,omitempty" json:"commit_sha,omitempty"`
 	RegisteredAfter  *time.Time `form:"registered_after,omitempty" json:"registered_after,omitempty"`
 	RegisteredBefore *time.Time `form:"registered_before,omitempty" json:"registered_before,omitempty"`
+
+	// Cursor Opaque cursor from a previous page's `next_cursor`.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListModuleDeploymentsParams defines parameters for ListModuleDeployments.
+type ListModuleDeploymentsParams struct {
+	// DeployedBefore Only records received at or before this instant.
+	DeployedBefore *time.Time `form:"deployed_before,omitempty" json:"deployed_before,omitempty"`
 
 	// Cursor Opaque cursor from a previous page's `next_cursor`.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
