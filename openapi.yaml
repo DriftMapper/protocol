@@ -1607,6 +1607,39 @@ paths:
         '503':
           $ref: '#/components/responses/GroupsUnavailable'
 
+  /v1/orgs/{slug}/apps/{appID}:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: appID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      operationId: deleteApp
+      summary: Delete an app and everything recorded under it
+      description: |
+        Permanently deletes the app with its modules, builds, deployment records,
+        environments, baselines and group grants. There is no undo. An admin or owner
+        only; a member gets 403 whatever their groups grant. An app that does not exist
+        in this organization is a 404.
+
+        An app is created the first time CI registers a module of it, so a pipeline that
+        still names the app registers it again, empty, on its next run. Change the
+        pipeline's app name first.
+      tags: [groups]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '204':
+          description: App deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/orgs/{slug}/groups/{groupID}/apps:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
