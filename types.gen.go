@@ -1495,7 +1495,12 @@ type CreateBaselineJSONBody struct {
 // ListAppBuildsParams defines parameters for ListAppBuilds.
 type ListAppBuildsParams struct {
 	// RepositoryId Filter to one repository.
-	RepositoryId     *string    `form:"repository_id,omitempty" json:"repository_id,omitempty"`
+	RepositoryId *string `form:"repository_id,omitempty" json:"repository_id,omitempty"`
+
+	// Module Filter to one module of the app, by exact name. A repository can hold
+	// several modules, so this narrows further than `repository_id`. A name the
+	// app has no module of matches nothing.
+	Module           *string    `form:"module,omitempty" json:"module,omitempty"`
 	Ref              *string    `form:"ref,omitempty" json:"ref,omitempty"`
 	CommitSha        *string    `form:"commit_sha,omitempty" json:"commit_sha,omitempty"`
 	RegisteredAfter  *time.Time `form:"registered_after,omitempty" json:"registered_after,omitempty"`
