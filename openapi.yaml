@@ -682,6 +682,13 @@ paths:
           in: query
           schema: { type: string }
           description: Filter to one repository.
+        - name: module
+          in: query
+          schema: { type: string }
+          description: |
+            Filter to one module of the app, by exact name. A repository can hold
+            several modules, so this narrows further than `repository_id`. A name the
+            app has no module of matches nothing.
         - name: ref
           in: query
           schema: { type: string }
