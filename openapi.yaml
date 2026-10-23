@@ -765,6 +765,14 @@ paths:
     get:
       operationId: getAppMatrix
       summary: Every module of one app against every environment
+      parameters:
+        - name: baseline
+          in: query
+          required: false
+          description: |
+            The baseline to compare against (DRFT-191). Defaults to the app's latest. An id
+            that is not one of this app's baselines is a 404.
+          schema: { type: integer, format: int64 }
       description: |
         The app's whole grid in one read (DRFT-189): all of its modules, all of its
         environments, and what each module is running in each environment that has a
@@ -789,6 +797,14 @@ paths:
         Unlike `listAppEnvironments`, a module that has been registered but never recorded
         in any environment still appears in `modules`. Every cell is a **claim by the
         deploying pipeline** (see `recordDeployment`), not a check of what is running.
+
+        When the app has a baseline (DRFT-191), `baseline` is the one compared against and
+        `drift` has one entry for every module and environment, including the pairs with no
+        cell. A pair `match`es when its cell and the baseline name the same build. It
+        `differs` in every other case: the environment has no build of the module, the
+        baseline has none, or they are different builds. Drift is computed from build
+        identity alone, in the same read as the cells. An app with no baseline has neither
+        field.
       tags: [deployments]
       x-stability: dashboard
       security:
@@ -805,6 +821,77 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
+  /v1/orgs/{slug}/apps/{appID}/baselines:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: appID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      operationId: listAppBaselines
+      summary: The baselines of one app, newest first
+      description: |
+        A baseline is a snapshot of an app: each module at a specific build (DRFT-191).
+        Newest first; the newest has `latest: true`. The same caller rule as
+        `listAppBuilds`: an admin or owner, or a member in a group the app is granted to.
+        Any other caller gets 404, the same as an app that does not exist.
+      tags: [deployments]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The app's baselines, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BaselineListResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+    post:
+      operationId: createBaseline
+      summary: Snapshot an environment as a baseline
+      description: |
+        Records what each module is running in `environment` right now as a new baseline
+        (DRFT-191). Admin or owner only. Only modules with a build in that environment are
+        in it. A baseline never changes and cannot be deleted; take a new one instead.
+        An unknown environment, or an app the caller cannot access, is a 404.
+      tags: [deployments]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment]
+              properties:
+                environment: { type: string, minLength: 1, maxLength: 63 }
+      responses:
+        '201':
+          description: Baseline created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BaselineResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
         '503':
           $ref: '#/components/responses/GroupsUnavailable'
 
@@ -2303,6 +2390,69 @@ components:
             One entry per module and environment that has at least one record. A pair with
             no entry has had nothing reported.
           items: { $ref: '#/components/schemas/EnvironmentState' }
+        baseline:
+          $ref: '#/components/schemas/Baseline'
+        drift:
+          type: array
+          description: |
+            One entry for every module and environment, present with `baseline`. See
+            `getAppMatrix` for what `match` and `differs` mean.
+          items: { $ref: '#/components/schemas/DriftCell' }
+
+    DriftCell:
+      type: object
+      required: [module, environment, status]
+      properties:
+        module: { type: string }
+        environment: { type: string }
+        status: { type: string, enum: [match, differs] }
+
+    BaselineItem:
+      type: object
+      description: One module at a build, as the baseline recorded it.
+      required: [module, build_instance_id, commit_sha]
+      properties:
+        module: { type: string }
+        build_instance_id: { type: string }
+        commit_sha: { type: string }
+        resolution_url:
+          type: string
+          format: uri
+          description: The build's resolution page.
+
+    Baseline:
+      type: object
+      description: |
+        A snapshot of an app: each module that had a build in `source_environment`, at that
+        build. Immutable.
+      required: [id, created_at, source_environment, created_by_email, latest, items]
+      properties:
+        id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        source_environment: { type: string }
+        created_by_email:
+          type: string
+          description: Who took the snapshot, as of then.
+        latest:
+          type: boolean
+          description: True on the app's newest baseline.
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/BaselineItem' }
+
+    BaselineResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Baseline' }
+
+    BaselineListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Baseline' }
 
     AppMatrixResponse:
       type: object

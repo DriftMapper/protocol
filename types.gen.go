@@ -100,6 +100,24 @@ func (e ChallengeIssuedStatus) Valid() bool {
 	}
 }
 
+// Defines values for DriftCellStatus.
+const (
+	Differs DriftCellStatus = "differs"
+	Match   DriftCellStatus = "match"
+)
+
+// Valid indicates whether the value is a known member of the DriftCellStatus enum.
+func (e DriftCellStatus) Valid() bool {
+	switch e {
+	case Differs:
+		return true
+	case Match:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MemberWithUserRole.
 const (
 	MemberWithUserRoleAdmin  MemberWithUserRole = "admin"
@@ -410,9 +428,17 @@ type AppMatrix struct {
 	// by the server's clock and not the viewer's.
 	AsOf time.Time `json:"as_of"`
 
+	// Baseline A snapshot of an app: each module that had a build in `source_environment`, at that
+	// build. Immutable.
+	Baseline *Baseline `json:"baseline,omitempty"`
+
 	// Cells One entry per module and environment that has at least one record. A pair with
 	// no entry has had nothing reported.
 	Cells []EnvironmentState `json:"cells"`
+
+	// Drift One entry for every module and environment, present with `baseline`. See
+	// `getAppMatrix` for what `match` and `differs` mean.
+	Drift *[]DriftCell `json:"drift,omitempty"`
 
 	// Environments Every environment of the app, in the order first recorded.
 	Environments []string `json:"environments"`
@@ -431,6 +457,43 @@ type AppMatrixResponse struct {
 // AppsResponse defines model for AppsResponse.
 type AppsResponse struct {
 	Data []App `json:"data"`
+}
+
+// Baseline A snapshot of an app: each module that had a build in `source_environment`, at that
+// build. Immutable.
+type Baseline struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// CreatedByEmail Who took the snapshot, as of then.
+	CreatedByEmail string         `json:"created_by_email"`
+	Id             int64          `json:"id"`
+	Items          []BaselineItem `json:"items"`
+
+	// Latest True on the app's newest baseline.
+	Latest            bool   `json:"latest"`
+	SourceEnvironment string `json:"source_environment"`
+}
+
+// BaselineItem One module at a build, as the baseline recorded it.
+type BaselineItem struct {
+	BuildInstanceId string `json:"build_instance_id"`
+	CommitSha       string `json:"commit_sha"`
+	Module          string `json:"module"`
+
+	// ResolutionUrl The build's resolution page.
+	ResolutionUrl *string `json:"resolution_url,omitempty"`
+}
+
+// BaselineListResponse defines model for BaselineListResponse.
+type BaselineListResponse struct {
+	Data []Baseline `json:"data"`
+}
+
+// BaselineResponse defines model for BaselineResponse.
+type BaselineResponse struct {
+	// Data A snapshot of an app: each module that had a build in `source_environment`, at that
+	// build. Immutable.
+	Data Baseline `json:"data"`
 }
 
 // Build The authenticated disclosure tier — full metadata (spec §2.7).
@@ -882,6 +945,16 @@ type DeploymentResponse struct {
 	// pipeline, not verification of what is running.
 	Data Deployment `json:"data"`
 }
+
+// DriftCell defines model for DriftCell.
+type DriftCell struct {
+	Environment string          `json:"environment"`
+	Module      string          `json:"module"`
+	Status      DriftCellStatus `json:"status"`
+}
+
+// DriftCellStatus defines model for DriftCell.Status.
+type DriftCellStatus string
 
 // EnvironmentState What one module is running in one environment, as the newest deployment record
 // claims. A claim by the deploying pipeline, not a check of what is running.
@@ -1414,6 +1487,11 @@ type UpdateOrgJSONBody struct {
 	Name string `json:"name"`
 }
 
+// CreateBaselineJSONBody defines parameters for CreateBaseline.
+type CreateBaselineJSONBody struct {
+	Environment string `json:"environment"`
+}
+
 // ListAppBuildsParams defines parameters for ListAppBuilds.
 type ListAppBuildsParams struct {
 	// RepositoryId Filter to one repository.
@@ -1426,6 +1504,13 @@ type ListAppBuildsParams struct {
 	// Cursor Opaque cursor from a previous page's `next_cursor`.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetAppMatrixParams defines parameters for GetAppMatrix.
+type GetAppMatrixParams struct {
+	// Baseline The baseline to compare against (DRFT-191). Defaults to the app's latest. An id
+	// that is not one of this app's baselines is a 404.
+	Baseline *int64 `form:"baseline,omitempty" json:"baseline,omitempty"`
 }
 
 // ListModuleDeploymentsParams defines parameters for ListModuleDeployments.
@@ -1503,6 +1588,9 @@ type CreateOrgJSONRequestBody CreateOrgJSONBody
 
 // UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
 type UpdateOrgJSONRequestBody UpdateOrgJSONBody
+
+// CreateBaselineJSONRequestBody defines body for CreateBaseline for application/json ContentType.
+type CreateBaselineJSONRequestBody CreateBaselineJSONBody
 
 // StartOrgCheckoutJSONRequestBody defines body for StartOrgCheckout for application/json ContentType.
 type StartOrgCheckoutJSONRequestBody StartOrgCheckoutJSONBody
