@@ -402,6 +402,32 @@ type App struct {
 	Name string `json:"name"`
 }
 
+// AppMatrix An app's modules against its environments. Cells are claims by the deploying
+// pipeline, not a check of what is running.
+type AppMatrix struct {
+	// AsOf The server's time when this was read. Every cell reflects the records received
+	// at or before it, so a copy of the matrix (a screenshot, an export) can be dated
+	// by the server's clock and not the viewer's.
+	AsOf time.Time `json:"as_of"`
+
+	// Cells One entry per module and environment that has at least one record. A pair with
+	// no entry has had nothing reported.
+	Cells []EnvironmentState `json:"cells"`
+
+	// Environments Every environment of the app, in the order first recorded.
+	Environments []string `json:"environments"`
+
+	// Modules Every module of the app, ordered by name.
+	Modules []string `json:"modules"`
+}
+
+// AppMatrixResponse defines model for AppMatrixResponse.
+type AppMatrixResponse struct {
+	// Data An app's modules against its environments. Cells are claims by the deploying
+	// pipeline, not a check of what is running.
+	Data AppMatrix `json:"data"`
+}
+
 // AppsResponse defines model for AppsResponse.
 type AppsResponse struct {
 	Data []App `json:"data"`

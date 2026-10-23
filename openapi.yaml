@@ -755,6 +755,59 @@ paths:
         '503':
           $ref: '#/components/responses/GroupsUnavailable'
 
+  /v1/orgs/{slug}/apps/{appID}/matrix:
+    parameters:
+      - $ref: '#/components/parameters/OrgSlug'
+      - name: appID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      operationId: getAppMatrix
+      summary: Every module of one app against every environment
+      description: |
+        The app's whole grid in one read (DRFT-189): all of its modules, all of its
+        environments, and what each module is running in each environment that has a
+        record. The same caller rule as `listAppBuilds`: an admin or owner, or a member in
+        a group the app is granted to. Any other caller gets 404, the same as an app that
+        does not exist.
+
+        `modules` are ordered by name and `environments` in the order they were first
+        recorded, which usually follows a pipeline's promotion order. `cells` has one
+        `EnvironmentState` for each module and environment that has at least one record,
+        in the same shape and with the same meaning as `listAppEnvironments` (including
+        `running_since`, when the *build* last changed). A module and environment with no
+        record have no cell: nothing has been reported for that pair, which is different
+        from having been reported as empty.
+
+        `as_of` is the server's time for the read, so the grid can be dated reliably.
+        In each cell `last_recorded_at` is the time of the newest report of any kind, a
+        redeploy of the same build included, so a deployment, or a deployment and its
+        rollback, during a period always moves it. `running_since` moves only when the
+        build changes.
+
+        Unlike `listAppEnvironments`, a module that has been registered but never recorded
+        in any environment still appears in `modules`. Every cell is a **claim by the
+        deploying pipeline** (see `recordDeployment`), not a check of what is running.
+      tags: [deployments]
+      x-stability: dashboard
+      security:
+        - userSession: []
+      responses:
+        '200':
+          description: The app's modules, environments and the cells that have a record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppMatrixResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/GroupsUnavailable'
+
   /v1/orgs/{slug}/apps/{appID}/modules/{module}/environments/{environment}/deployments:
     parameters:
       - $ref: '#/components/parameters/OrgSlug'
@@ -2221,6 +2274,41 @@ components:
         data:
           type: array
           items: { $ref: '#/components/schemas/EnvironmentState' }
+
+    AppMatrix:
+      type: object
+      description: |
+        An app's modules against its environments. Cells are claims by the deploying
+        pipeline, not a check of what is running.
+      required: [as_of, modules, environments, cells]
+      properties:
+        as_of:
+          type: string
+          format: date-time
+          description: |
+            The server's time when this was read. Every cell reflects the records received
+            at or before it, so a copy of the matrix (a screenshot, an export) can be dated
+            by the server's clock and not the viewer's.
+        modules:
+          type: array
+          description: Every module of the app, ordered by name.
+          items: { type: string }
+        environments:
+          type: array
+          description: Every environment of the app, in the order first recorded.
+          items: { type: string }
+        cells:
+          type: array
+          description: |
+            One entry per module and environment that has at least one record. A pair with
+            no entry has had nothing reported.
+          items: { $ref: '#/components/schemas/EnvironmentState' }
+
+    AppMatrixResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AppMatrix' }
 
     DeploymentRecord:
       type: object
